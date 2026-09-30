@@ -1,0 +1,11 @@
+# Install PyTorch first, matching your GPU (see README), e.g.
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+docling>=2.130
+pymupdf>=1.28
+pysbd>=0.3.4
+fastapi>=0.141
+uvicorn[standard]>=0.53
+python-multipart>=0.0.32
+httpx>=0.28
+numpy>=2.0
+pillow>=12.0
