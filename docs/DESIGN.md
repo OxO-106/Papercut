@@ -172,6 +172,10 @@ Measured against the previous one-pass classifier (which labelled each section i
 <library>/
   settings.json                 # global reading settings
   recent.json                   # recently opened papers
+  shelf.json                    # your status, tags and collection per paper
+  collections.json              # the AI's collections and which paper is in which
+  reviews.json                  # flashcard review state, "<paper id>:<card id>"
+  pending-jobs.json             # unfinished background jobs, resumed on start
   papers/
     <sha256-prefix>/
       original.pdf
@@ -199,7 +203,10 @@ Measured against the previous one-pass classifier (which labelled each section i
     "s40": { "text": "…", "rects": [{ "page": 1, "bbox": [x0, y0, x1, y1] }] }
   },
   "ai_labels":  { "s40": { "category": "objective", "confidence": 0.91 } },
-  "user_edits": { "s41": { "category": "novelty" }, "s43": { "category": null } }
+  "user_edits": { "s41": { "category": "novelty" }, "s43": { "category": null } },
+  "summary":   { "tldr": "…", "results": [{ "text": "…", "highlights": ["s40"] }], "topics": ["…"], … },
+  "cards":     { "cards": [{ "id": "…", "front": "…", "back": "…", "highlights": ["s40"], "by": "ai" }] },
+  "ref_links": { "b301": "<paper id>" }   // cited papers added to the library
 }
 ```
 
@@ -235,7 +242,11 @@ Captions render below their figure or table, as in the paper. Loose captions Doc
 The reverse of splitting side-by-side tables: Docling sometimes cuts one figure into several pictures and gives the caption to one (ReAct's Figure 2: two plots side by side; Attention's Figure 2: two diagrams). An uncaptioned picture within three blocks of a captioned one, on the same page, with its centre inside the caption's width, and either beside it (≥50% vertical overlap) or directly above/below it (≤25pt gap, overlapping horizontally) is merged into it. The merged crop spans the caption's width and is then trimmed to the ink, so edge labels the pieces' boxes missed ("Scaled Dot-Product Attention") are kept. Pictures with their own captions are never merged. Dry runs over all 13 papers changed exactly these two figures.
 
 ### 6.4a3 Boxed tables (text between rules)
-Some tables are not grids but boxed text between horizontal rules: DeepSeek-R1's prompt template and "aha moment" (Tables 1–2) and its evaluation-prompt tables, SWE-bench's appendix example trajectories, ReAct's prompts, and "Listing N" boxes. Docling reads these as a caption followed by ordinary paragraphs, code and even headings, with no table. For a "Table N"/"Listing N" caption with no figure or table within two blocks, `_tables_from_rules` looks for a horizontal rule (a line, or a hairline box, ≥60pt wide, under the caption's centre) within 45pt below the caption (or above it, for a caption under its table), follows rules of the same width until another caption or float lies in between, and crops from the first to the last rule as the table; the caption goes under it as usual, and every text block ≥60% inside the box (including headings like "PROMPT" and code blocks, which are located by their overall position) leaves the reading flow. Needs at least two rules; a box continuing onto the next page keeps that page's part as text. Dry runs: DeepSeek-R1 +16 tables (Tables 1, 2, 18–32, Listings 1, 4), SWE-bench +10 (Tables 25–34), ReAct +5, Attention unchanged.
+Some tables are not grids but boxed text between horizontal rules: DeepSeek-R1's prompt template and "aha moment" (Tables 1–2) and its evaluation-prompt tables, SWE-bench's appendix example trajectories, ReAct's prompts, and "Listing N" boxes. Docling reads these as a caption followed by ordinary paragraphs, code and even headings, with no table. For a "Table N"/"Listing N" caption with no figure or table within two blocks, `_tables_from_rules` looks for a horizontal rule (a line, or a hairline box, ≥60pt wide, under the caption's centre) within 45pt below the caption (or above it, for a caption under its table), follows rules of the same width until another caption or float lies in between, and crops from the first to the last rule as the table; the caption goes under it as usual, and every text block ≥60% inside the box (including headings like "PROMPT" and code blocks, which are located by their overall position) leaves the reading flow. Needs at least two rules; a box whose rule chain doesn't close on the caption's page is followed instead by its **monospace lines** (PyMuPDF font flag), across up to 8 pages, until the first line of prose or another caption; each page's piece is rendered and the pieces are stacked into one image (DeepSeek-R1 Listings 2, 5, 6 run over 2–4 pages). "Listing N" captions that Docling read as a paragraph or as code are recognised as captions first. Dry runs: DeepSeek-R1 +16 tables (Tables 1, 2, 18–32, Listings 1, 4), SWE-bench +10 (Tables 25–34), ReAct +5, Attention unchanged.
+
+### 6.4a4 Cited papers: open or add
+Each reference-list entry, and each reference in a citation's hover card, gets an action: **Open in Papercut** when the cited paper is already in the library (matched by its title appearing in the entry, or by an earlier add), otherwise **Add to library**. Adding (`app/refs.py`) uses an arXiv id or DOI written in the entry; otherwise it asks OpenAlex's search and Crossref's bibliographic search with the whole entry and accepts a candidate only if its title appears in the entry, so a near-miss never adds the wrong paper. It then prefers the paper's arXiv copy, else an open-access PDF via the DOI, downloads it like a pasted link and queues it; the link is remembered in `ref_links` (kept across re-parses). Endpoint: `POST /api/papers/{id}/references/{block}/add`.
+
 ### 6.4b Figure and table mentions
 Mentions such as "Figure 3", "Tables 1 and 2" or "Fig. 4a" are linked at parse time to the figure/table whose caption starts with that label. They are underlined with dots; hovering or tapping shows the figure or table image with its caption and a "Go to" button.
 
@@ -275,6 +286,15 @@ A **Questions** button in the top bar opens its own side panel (in the same plac
 
 Cards show the kind, status, question, the highlight(s) it is about (click to jump), the answer with [n]/[S] chips, what was looked up, and "Follow up in Ask". Stored in `paper.json` as `insights` (kept across re-parses, highlights re-anchored by text); "Ask new questions" replaces them. Endpoints: `GET/POST /api/papers/{id}/insights`.
 
+### 6.4d4 Questions in their own window, and export
+The Questions panel can **Open in window** (`#/paper/{id}/questions`, a popup window; in the installed app, its own app window) and **Export** the questions and answers as Markdown. The window lists the same cards and has Export and Print. It talks to the reader window over a `BroadcastChannel`: clicking a highlight or source jumps there in the reader, and "Follow up in Ask" fills the reader's Ask box; if no reader window has the paper open (no reply within 0.4 s), the window itself turns into the reader.
+
+### 6.4d5 Summary
+The **Summary** panel is a one-page cheat sheet written by a background job (`app/summary.py`, kind `summary`) that runs automatically after every highlighting (and once, on start, for papers highlighted before summaries existed). With thinking on, the model gets its reading notes, its key highlights with margin notes, the abstract, the section outline and the front matter, and writes: TL;DR, problem, approach, 3–5 key results with numbers, contributions, limitations, open questions, plus authors, year, venue and 3–6 topic tags. Results, contributions and limitations carry the highlights they rest on, shown as page chips that jump to the sentence. Below it, **In your library** shows how the paper connects to the rest of the library (6.7). Endpoints: `GET/POST /api/papers/{id}/summary`, `GET /api/papers/{id}/connections`.
+
+### 6.4d6 Flashcards and review
+The **Cards** panel holds the paper's flashcards: ~15 written by the model (`app/cards.py`, kind `cards`) from the summary, key highlights and answered Questions (question on the front, a 1–3 sentence answer on the back, a kind, and the highlights it tests), plus your own (**Add your own card**, or **Make a flashcard** in a sentence's menu, which prefills the back with the sentence). Rewriting the AI's cards keeps yours. **Review** in the top bar (with a count of cards due) shows due cards across the library, oldest first, then up to 20 new ones; `#/review/{id}` reviews one paper. Space shows the answer; 1–4 grade it Again / Hard / Good / Easy, each labelled with when the card will come back. Scheduling is SM-2 in days (Again: this session, in a minute; new card: Hard/Good 1 day, Easy 4; the second Good 3 days; then ×1.2 / ×ease / ×ease×1.3, ease 1.3–∞, starting 2.5). Review state is in `reviews.json` keyed by paper and card id (a hash of the front), so it survives rewrites of the back and re-parses. When nothing is due, the page lists papers without cards and can queue them all.
+
 ### 6.4e Explain a sentence
 Hovering a sentence shows a small **Explain** button at its end (the sentence menu has the same action for touch screens). The local model explains the sentence in 2–4 plain-language sentences — what it says, its jargon or symbols, and why it matters — using the paper's abstract, the sentence's paragraph, and the three passages that best match it (hybrid retrieval, as above). The hover control is a small lightbulb icon at the end of the sentence. The explanation streams into a popover under the sentence and is cached per sentence in `paper.json` (`explanations`), surviving re-parses.
 
@@ -302,6 +322,9 @@ Words set in bold or italic in the PDF (run-in headings such as "**Evaluation me
 ### 6.4g Notes
 Any sentence can carry a free-text note (sentence menu → **Add note** / **Edit note**). Notes are stored in `paper.json` (`notes`: id, sentence id, text, timestamps) on the PC, so every device using the server sees the same notes; an open page re-fetches them when its window regains focus. They appear in the right margin beside their sentence when at least 250 px is free, otherwise as cards under the paragraph; noted sentences get a yellow underline, and hovering a card outlines its sentence. Notes survive re-parses (re-anchored by sentence text).
 
+### 6.4h Outdated highlights
+When the highlighter changes (its version is stored with each paper's highlights), a paper highlighted by an older version shows a notice with **Update highlights**, which re-runs the AI; your edits and notes are kept.
+
 ### 6.5 Export
 Produces a copy of the original PDF with:
 - A highlight annotation over each visible highlighted sentence's rectangles, colored by category, with the category name as the annotation comment.
@@ -309,6 +332,19 @@ Produces a copy of the original PDF with:
 - Each note as a PDF comment (speech-bubble icon) in the margin beside its sentence's line.
 
 The paper's pages are not modified; recipients can view, change or delete annotations in any PDF reader. Export respects the AI's kept highlights, category visibility and user edits.
+
+**Markdown** (More → Export Markdown…, `app/markdown.py`): choose any of summary, highlights (grouped by section, with category, page number, the AI's margin note and your notes), your notes, questions and answers, flashcards and the Ask history. Passage citations become page references "(p. 5)", outside sources become links. Hidden categories are left out. Endpoint: `GET /api/papers/{id}/markdown?parts=…&hidden=…`.
+
+### 6.6 Library
+The home page is the library (`app/catalog.py`):
+- **Continue reading:** up to three papers started but not finished.
+- **Collections** on the left. The model groups the library into 2–8 themed collections (kind `organize`, a library-wide job); it runs automatically when a new paper's summary is ready and it has no collection, keeping the existing collections and only filing new papers. **Reorganize with AI** can keep them or start over. You can move a paper to another or a new collection; your choice wins over the AI's.
+- **Each paper:** title, authors · venue year, TL;DR, AI topic tags (click to filter), your own tags, status (to read / reading / done: from reading progress, ≥95% = done, unless you set it), collection, a progress bar and counts of highlights, notes, questions and cards.
+- **Filters and sort:** status, collection; last opened, recently added, title, year.
+- **Search:** filters the list instantly by title, authors, venue, year, summary, topics, tags and collection; after a pause (or Enter), it also searches **inside** every paper: each passage is scored by embedding similarity to the query plus keyword overlap, at most four passages per paper, grouped by paper with the matches marked; a click opens the paper at that passage (`#/paper/{id}/s/{sid}`). Per-paper passages and vectors are cached in memory by `paper.json`'s modification time (a query takes ~0.2 s after the first). Endpoints: `GET /api/library`, `PUT /api/library/{id}`, `POST /api/library/organize`, `GET /api/search?q=`.
+
+### 6.7 Connections between papers
+For a paper, `connections` lists: the library papers it **cites** (its reference entries that contain another library paper's title, or that were added from its references), the library papers that **cite it**, and the papers **closest in content** (cosine similarity of the mean passage embeddings, with shared topic tags). Shown in the Summary panel; reference entries that are in the library link to them.
 
 ---
 
@@ -387,4 +423,8 @@ Ten real papers the owner reads, stored in `D:\Read\Papers\` (`Paper 1.pdf` … 
 | D27 | Reading position saved as a sentence anchor, server-side, restored automatically | Pixel scroll offset; browser-only storage |
 | D28 | Outline nested by section numbering; appendix folded; progress counts the main text only | Flat heading list; progress over the whole document |
 | D29 | Highlights by read → mark → choose: whole-paper reading notes, paragraph-aware marking with margin notes, paper-wide dedupe and tiering | One-pass per-section classification with a free confidence score |
+| D30 | Summary, flashcards and collections generated by the local model as background jobs, from its own reading notes and highlights | Summaries from the abstract only; cards and collections by hand only |
+| D31 | Spaced repetition with SM-2 in days, review state per card in the library | A fixed review schedule; state in the browser |
+| D32 | Cross-paper search: embedding similarity plus keyword overlap over every paper's cached passage vectors | A separate search index; keyword search only |
+| D33 | A cited paper is added only when a search result's title appears in the reference entry | Taking the top search hit |
 | D25 | Sentence-anchored notes stored server-side; margin layout when room, inline otherwise; exported as PDF comments | Notes kept in the browser only; not exported |

@@ -199,6 +199,10 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
     for b in raw:
         if b["type"] == "paragraph" and b["region"] != "front" and _CAPTION_START.match(b["text"]):
             b["type"] = "caption"
+        # "Listing 3 | ..." read as a paragraph or as code (it sits on top of code).
+        elif b["type"] in ("paragraph", "code") and b["region"] != "front" and _LISTING.match(b["text"]) \
+                and len(b["text"]) < 300 and "\n" not in b["text"].strip():
+            b["type"] = "caption"
     raw = _join_caption_lines(raw)
     raw, n_float = _tables_from_rules(raw, pdf, paper_id, n_float)
 
@@ -615,6 +619,16 @@ def _tables_from_rules(raw: list[dict], pdf: fitz.Document, paper_id: str, n_flo
         above = [r for r in spans if cy0 - 45 <= r[0] <= cy0 + 1]
         found = chain(below[0], +1) if below else (chain(above[-1], -1) if above else [])
         if len(found) < 2:
+            # No closing rule on this page: a listing that runs on over the
+            # page break (DeepSeek-R1's Listings 2, 5, 6). Follow its monospace
+            # lines instead, across pages, and stack the pieces into one image.
+            segs = _monospace_run(pdf, p, cy1, below[0] if below else None, stops, raw, ci)
+            if segs:
+                n_float += 1
+                crop = _crop_stack(pdf, paper_id, f"table-{n_float}", segs)
+                if crop:
+                    made[ci] = {"type": "table", **crop, "_captions": [{"text": c["text"], "provs": c.get("provs", [])}],
+                                "region": c["region"], "_pos": segs[0], "_segs": segs}
             continue
         y0, y1 = min(r[0] for r in found), max(r[0] for r in found)
         x0, x1 = min(r[1] for r in found), max(r[2] for r in found)
@@ -632,9 +646,9 @@ def _tables_from_rules(raw: list[dict], pdf: fitz.Document, paper_id: str, n_flo
         for page_no, (x0, y0, x1, y1) in _boxes(b):
             area += max(0.0, x1 - x0) * max(0.0, y1 - y0)
             for t in made.values():
-                tp, tx0, ty0, tx1, ty1 = t["_pos"]
-                if tp == page_no:
-                    covered += max(0.0, min(x1, tx1) - max(x0, tx0)) * max(0.0, min(y1, ty1) - max(y0, ty0))
+                for tp, tx0, ty0, tx1, ty1 in t.get("_segs") or [t["_pos"]]:
+                    if tp == page_no:
+                        covered += max(0.0, min(x1, tx1) - max(x0, tx0)) * max(0.0, min(y1, ty1) - max(y0, ty0))
         return area > 0 and covered / area >= 0.6
 
     out = []
@@ -643,7 +657,96 @@ def _tables_from_rules(raw: list[dict], pdf: fitz.Document, paper_id: str, n_flo
             out.append(made[i])
         elif b["type"] in ("figure", "table", "title") or not inside(b):
             out.append(b)
+    for t in made.values():
+        t.pop("_segs", None)
     return out, n_float
+
+
+def _mono_lines(page: fitz.Page) -> list[tuple[float, float, float, float, bool, str]]:
+    """The page's text lines in reading order, as (x0, y0, x1, y1, monospace, text)."""
+    out = []
+    for blk in page.get_text("dict")["blocks"]:
+        for line in blk.get("lines", []):
+            text = "".join(s["text"] for s in line["spans"])
+            if not text.strip():
+                continue
+            mono = sum(len(s["text"]) for s in line["spans"] if s["flags"] & 8)
+            x0, y0, x1, y1 = line["bbox"]
+            out.append((x0, y0, x1, y1, mono >= 0.6 * len(text.strip()), text.strip()))
+    return sorted(out, key=lambda l: (round(l[1]), l[0]))
+
+
+def _monospace_run(pdf: fitz.Document, p: int, cy1: float, rule, stops: list, raw: list[dict], ci: int) -> list[tuple]:
+    """The monospace text that starts right under a listing caption on page p,
+    followed onto later pages until the first line of prose (or another
+    caption). Returns one (page, x0, y0, x1, y1) box per page, or [] when the
+    caption isn't followed by monospace text or the run is too short to be a
+    listing. The page number at the foot of each page is skipped."""
+    segs, n_lines = [], 0
+    x0, x1 = (rule[1], rule[2]) if rule else (None, None)
+    for q in range(p, min(p + 8, len(pdf) + 1)):
+        page = pdf[q - 1]
+        foot = page.rect.height * 0.92
+        top = (rule[0] if rule else cy1) if q == p else 0
+        later_stops = [s for s in stops if q == p and s[2] > top] + \
+                      [b["_pos"] for k, b in enumerate(raw) if k > ci and b.get("_pos") and b["_pos"][0] == q and q != p
+                       and (b["type"] in ("figure", "table") or (b["type"] == "caption" and _caption_kind(b.get("text", ""))))]
+        limit = min((s[2] for s in later_stops), default=page.rect.height)
+        lines = [l for l in _mono_lines(page) if l[1] >= top - 1 and l[3] <= limit + 1
+                 and not (l[1] > foot and re.fullmatch(r"\d{1,3}", l[5]))]
+        run, ended = [], False
+        for l in lines:
+            if not l[4] and len(l[5]) > 3:
+                ended = True
+                break
+            run.append(l)
+        if q == p and not (run and run[0][4]):
+            return []  # prose (or nothing) right under the caption: not a listing
+        if run:
+            n_lines += len(run)
+            lx0, lx1 = min(l[0] for l in run), max(l[2] for l in run)
+            segs.append((q, min(lx0, x0) if x0 is not None else lx0, run[0][1] - 2,
+                         max(lx1, x1) if x1 is not None else lx1, run[-1][3] + 2))
+        if ended or limit < page.rect.height or not run:
+            break
+    if n_lines < 3:
+        return []
+    # One width for every piece, so the stacked image lines up.
+    lo, hi = min(s[1] for s in segs), max(s[3] for s in segs)
+    return [(q, lo, y0, hi, y1) for q, _, y0, _, y1 in segs]
+
+
+def _crop_stack(pdf: fitz.Document, paper_id: str, name: str, segs: list[tuple]) -> dict | None:
+    """Like _crop, for a float that runs over several pages: render each
+    page's piece and stack them into one image."""
+    if len(segs) == 1:
+        q, x0, y0, x1, y1 = segs[0]
+        return _crop(pdf, paper_id, name, (q, (x0, y0, x1, y1)))
+    from PIL import Image
+    import io
+    pieces = []
+    for q, x0, y0, x1, y1 in segs:
+        page = pdf[q - 1]
+        rect = fitz.Rect(x0 - 2, y0 - 2, x1 + 2, y1 + 2) & page.rect
+        if rect.width < 12 or rect.height < 8:
+            continue
+        pieces.append(Image.open(io.BytesIO(page.get_pixmap(clip=rect, dpi=CROP_DPI).tobytes("png"))).convert("RGB"))
+    if not pieces:
+        return None
+    width = max(im.width for im in pieces)
+    gap = round(CROP_DPI / 72 * 6)  # a little space where the page broke
+    out = Image.new("RGB", (width, sum(im.height for im in pieces) + gap * (len(pieces) - 1)), "white")
+    y = 0
+    for im in pieces:
+        out.paste(im, (0, y))
+        y += im.height + gap
+    buf = io.BytesIO()
+    out.save(buf, "PNG", optimize=True)
+    png = buf.getvalue()
+    fname = f"{name}-{hashlib.sha1(png).hexdigest()[:8]}.png"
+    (library.assets_dir(paper_id) / fname).write_bytes(png)
+    x0, x1 = segs[0][1], segs[0][3]
+    return {"image": f"assets/{fname}", "width_pt": round(x1 - x0 + 4, 1), "page": segs[0][0]}
 
 
 def _merge_split_figures(raw: list[dict], pdf: fitz.Document, paper_id: str, n_float: int) -> tuple[list[dict], int]:

@@ -1,20 +1,27 @@
 """Background processing queue. One worker thread: the GPU runs one paper at a time.
 
 A "full" job parses the PDF and then highlights it; a "highlight" job re-runs
-only the AI; an "insights" job writes and answers questions about the
-highlights (its status is kept apart, under "<paper id>:insights", so it
-never looks like the paper itself is being processed). If highlighting fails (e.g. Ollama isn't running) the paper is
-still readable; the error is kept in paper.json's status.
+only the AI. Side jobs add to a processed paper, and their status is kept
+apart under "<paper id>:<kind>", so they never look like the paper itself is
+being processed:
+  insights - write and answer questions about the highlights
+  summary  - the one-page summary (queued after every highlighting)
+  cards    - flashcards
+One library-wide job, "organize" (status key "library:organize"), groups the
+papers into collections; it is queued when a summary finishes for a paper that
+has no collection yet. If highlighting fails (e.g. Ollama isn't running) the
+paper is still readable; the error is kept in paper.json's status.
 """
 
 import json
+import os
 import queue
 import threading
 import traceback
 
 import httpx
 
-from . import ask, insights, library, llm
+from . import ask, cards, catalog, insights, library, llm, summary
 from .highlight import VERSION as highlight_version, classify_paper
 from .parse import parse_paper
 
@@ -51,14 +58,22 @@ def status(paper_id: str) -> dict:
     return {"state": "unknown"}
 
 
+SIDE_KINDS = ("insights", "summary", "cards", "organize", "organize-fresh")
+LIBRARY_ID = "library"  # the paper id of library-wide jobs
+
+
 def insights_key(paper_id: str) -> str:
     return f"{paper_id}:insights"
+
+
+def side_key(paper_id: str, kind: str) -> str:
+    return f"{paper_id}:{kind.removesuffix('-fresh')}"
 
 
 def submit(paper_id: str, kind: str = "full", force: bool = False) -> None:
     if kind == "full" and not force and library.load_paper(paper_id):
         return
-    key = insights_key(paper_id) if kind == "insights" else paper_id
+    key = side_key(paper_id, kind) if kind in SIDE_KINDS else paper_id
     with _lock:
         if _status.get(key, {}).get("state") in ("queued", "running"):
             return
@@ -76,22 +91,30 @@ def _finished(paper_id: str, kind: str) -> None:
         _save_pending()
 
 
-def _insights(paper_id: str) -> None:
-    key = insights_key(paper_id)
-    result = insights.generate(library.load_paper(paper_id), lambda stage, frac: _set(key, stage=stage, progress=frac))
-    library.update_paper(paper_id, lambda p: p.update(insights=result))
+def _side(paper_id: str, kind: str) -> None:
+    """Run one side job and store its result in paper.json."""
+    key = side_key(paper_id, kind)
+    progress = lambda stage, frac: _set(key, stage=stage, progress=frac)
+    if kind.startswith("organize"):
+        catalog.organize(fresh=kind == "organize-fresh", progress=progress)
+        return
+    make = {"insights": insights.generate, "summary": summary.generate, "cards": cards.generate}[kind]
+    result = make(library.load_paper(paper_id), progress)
+    library.update_paper(paper_id, lambda p: p.update({kind: result}))
+    if kind == "summary" and paper_id in catalog.unassigned():
+        submit(LIBRARY_ID, kind="organize")  # file the new paper into a collection
 
 
-def _explain(e: Exception) -> str:
+def _explain(e: Exception, what: str = "Highlights") -> str:
     """Turn common AI failures into something the reader can act on."""
     cfg = llm.settings()
     if isinstance(e, httpx.ConnectError):
-        return f"Highlights unavailable: Ollama isn't running at {cfg['url']}. Start Ollama, then retry."
+        return f"{what} unavailable: Ollama isn't running at {cfg['url']}. Start Ollama, then retry."
     if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
-        return f"Highlights unavailable: the model {cfg['model']} isn't downloaded. Run: ollama pull {cfg['model']}"
+        return f"{what} unavailable: the model {cfg['model']} isn't downloaded. Run: ollama pull {cfg['model']}"
     if isinstance(e, httpx.TimeoutException):
-        return "Highlights unavailable: the AI took too long to answer. Retry, or pick a smaller model."
-    return f"Highlights unavailable: {type(e).__name__}: {e}"
+        return f"{what} unavailable: the AI took too long to answer. Retry, or pick a smaller model."
+    return f"{what} unavailable: {type(e).__name__}: {e}"
 
 
 def _highlight(paper_id: str, paper: dict, lo: float) -> None:
@@ -115,6 +138,8 @@ def _highlight(paper_id: str, paper: dict, lo: float) -> None:
                            model=model or p["status"].get("model"), error=error)
 
     library.update_paper(paper_id, apply)
+    if labels is not None:
+        submit(paper_id, kind="summary")  # the summary is written from the new highlights
 
     # Embed passages for Q&A now, so the first question is quick.
     try:
@@ -127,15 +152,17 @@ def _highlight(paper_id: str, paper: dict, lo: float) -> None:
 def _worker() -> None:
     while True:
         paper_id, kind = _queue.get()
-        if kind == "insights":
-            key = insights_key(paper_id)
+        if kind in SIDE_KINDS:
+            key = side_key(paper_id, kind)
+            what = {"insights": "Questions", "summary": "Summary", "cards": "Flashcards"}.get(kind, "Collections")
             try:
                 _set(key, state="running")
-                _insights(paper_id)
+                _side(paper_id, kind)
                 _set(key, state="done", stage="Ready", progress=1.0)
             except Exception as e:
                 traceback.print_exc()
-                _set(key, state="error", stage="Failed", error=str(e) if isinstance(e, ValueError) else _explain(e).replace("Highlights", "Questions"))
+                _set(key, state="error", stage="Failed",
+                     error=str(e) if isinstance(e, ValueError) else _explain(e, what))
             finally:
                 _finished(paper_id, kind)
                 _queue.task_done()
@@ -169,9 +196,22 @@ def _resume() -> None:
     except (OSError, json.JSONDecodeError):
         return
     for paper_id, kind in left:
-        if library.paper_dir(paper_id).exists():
+        if paper_id == LIBRARY_ID or library.paper_dir(paper_id).exists():
             submit(paper_id, kind=kind, force=True)
 
 
-threading.Thread(target=_worker, daemon=True, name="paper-worker").start()
-_resume()
+def _backfill() -> None:
+    """Papers highlighted before summaries existed get one (once)."""
+    queued = {tuple(x) for x in _pending}
+    for pid in catalog.paper_ids():
+        p = library.load_paper(pid)
+        if p and p["status"].get("classified") and not p.get("summary") and (pid, "summary") not in queued:
+            submit(pid, kind="summary")
+
+
+# PAPERCUT_WORKER=0 runs a server without the worker (a second copy for
+# testing against the same library): nothing is processed or resumed.
+if os.environ.get("PAPERCUT_WORKER", "1") != "0":
+    threading.Thread(target=_worker, daemon=True, name="paper-worker").start()
+    _resume()
+    _backfill()

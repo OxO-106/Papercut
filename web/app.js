@@ -1,15 +1,18 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const views = ["home", "progress", "reader"];
+const views = ["home", "progress", "reader", "review", "qview"];
 let current = null; // loaded paper.json
 
 function show(view) {
   for (const v of views) $(v).hidden = v !== view;
   $("paper-actions").hidden = view !== "reader";
-  if (view !== "reader" && !$("chat").hidden) setChatOpen(false);
-  if (view !== "reader" && !$("qpanel").hidden) setQuestionsOpen(false);
+  if (view !== "reader" && openPanelName) setPanel(null);
   if (view !== "reader" && !$("outline").hidden) setOutlineOpen(false, false);
+  closeMenu();
+  $("nav-library").classList.toggle("active", view === "home");
+  $("nav-review").classList.toggle("active", view === "review");
+  if (view !== "reader") window.scrollTo(0, 0); // the reader restores its own position
 }
 
 async function api(path, opts) {
@@ -113,32 +116,26 @@ api("/api/settings").then((s) => { Object.assign(settings, s); applySettings(); 
 // ---------- routing ----------
 history.scrollRestoration = "manual"; // the reader restores its own position (below)
 window.addEventListener("hashchange", route);
+// #/                          library
+// #/paper/<id>                the reader; #/paper/<id>/s/<sid> opens it at a sentence
+// #/paper/<id>/questions      the questions on their own (a separate window)
+// #/review, #/review/<id>     flashcard review, across the library or for one paper
 function route() {
-  const m = location.hash.match(/^#\/paper\/([a-f0-9]+)/);
-  if (m) openPaper(m[1]);
+  const h = location.hash;
+  let m;
+  if ((m = h.match(/^#\/paper\/([a-f0-9]+)\/questions/))) showQuestionsView(m[1]);
+  else if ((m = h.match(/^#\/paper\/([a-f0-9]+)(?:\/s\/(s\d+))?/))) openPaper(m[1], m[2]);
+  else if ((m = h.match(/^#\/review(?:\/([a-f0-9]+))?/))) showReview(m[1]);
   else showHome();
 }
 
-// ---------- home ----------
+// ---------- home: the library ----------
 async function showHome() {
   show("home");
   document.title = "Papercut";
-  const list = $("recent");
-  const items = await api("/api/recent").catch(() => []);
-  list.replaceChildren();
-  if (!items.length) {
-    list.innerHTML = '<li class="empty">No papers yet.</li>';
-    return;
-  }
-  for (const it of items) {
-    const li = document.createElement("li");
-    const a = document.createElement("a");
-    a.href = `#/paper/${it.id}`;
-    a.append(el("span", "recent-title", it.title));
-    if (it.percent >= 1) a.append(el("span", "recent-pct", `${Math.round(it.percent)}%`));
-    li.append(a);
-    list.append(li);
-  }
+  current = null;
+  await loadLibrary();
+  refreshReviewCount();
 }
 
 async function upload(file) {
@@ -206,7 +203,11 @@ async function waitUntilProcessed(id) {
 }
 
 // ---------- reader ----------
-async function openPaper(id) {
+async function openPaper(id, sid) {
+  if (current?.id === id && !$("reader").hidden) { // already open: just jump
+    if (sid) jumpToSentence(sid);
+    return;
+  }
   let paper;
   try {
     paper = await api(`/api/papers/${id}`);
@@ -215,26 +216,30 @@ async function openPaper(id) {
     paper = await api(`/api/papers/${id}`);
   }
   current = paper;
+  current.links = {}; // reference block -> library paper (loadConnections)
   document.title = paper.meta.title;
   $("original").hidden = true;
   $("original").removeAttribute("src");
   $("paper").hidden = false;
-  $("toggle-original").setAttribute("aria-pressed", "false");
+  setOriginalShown(false);
   render(paper);
   applyHighlights();
   renderNotice();
   editingId = null;
   draft = null;
-  if (!$("chat").hidden) renderChat();
-  if (!$("qpanel").hidden) loadQuestions();
   show("reader");
+  if (openPanelName) PANEL_OPEN[openPanelName]();
   window.scrollTo(0, 0);
   buildOutline(paper);
   buildFloats(paper);
   setOutlineTab(settings.outlineTab, false);
   setOutlineOpen(settings.outline && window.innerWidth >= 1100, false);
   renderNotes();
-  restorePosition(paper.id);
+  loadConnections();
+  if (sid) {
+    history.replaceState(null, "", `#/paper/${id}`); // a jump link, not a place to come back to
+    requestAnimationFrame(() => jumpToSentence(sid));
+  } else restorePosition(paper.id);
 }
 
 function el(tag, cls, text) {
@@ -509,10 +514,12 @@ function renderNotice() {
   const n = $("notice");
   const st = current.status || {};
   n.replaceChildren();
+  const outdated = st.classified && (st.highlight_version || 1) < (current.highlighter_version || 0);
   if (st.error) n.append(el("span", null, st.error));
   else if (!st.classified) n.append(el("span", null, "This paper has no AI highlights yet."));
+  else if (outdated) n.append(el("span", null, "These highlights were made by an older version of the highlighter. Updating re-reads the paper (a few minutes); your own edits and notes stay."));
   else { n.hidden = true; return; }
-  const retry = el("button", null, st.error ? "Retry" : "Highlight now");
+  const retry = el("button", null, st.error ? "Retry" : outdated ? "Update highlights" : "Highlight now");
   retry.type = "button";
   retry.addEventListener("click", rehighlight);
   n.append(retry);
@@ -574,9 +581,14 @@ function openPicker(span, x, y) {
   note.setAttribute("role", "menuitem");
   note.append((current.notes || []).some((n) => n.sid === span.dataset.sid) ? "Edit note" : "Add note");
   note.addEventListener("click", () => addNote(span));
+  const card = el("button", "picker-explain");
+  card.type = "button";
+  card.setAttribute("role", "menuitem");
+  card.append("Make a flashcard");
+  card.addEventListener("click", () => { closePicker(); newCardFrom(sid); });
   const aiNote = span.dataset.hl && current.ai_labels?.[sid]?.note;
   if (aiNote) picker.append(el("p", "picker-note", aiNote));
-  picker.append(ex, tr, note, el("hr"));
+  picker.append(ex, tr, note, card, el("hr"));
   for (const [cat, label] of CATEGORIES) item(label, cat, cat);
   item("No highlight", null);
   if (edited) {
@@ -707,7 +719,7 @@ function renderNotes() {
   for (const { span } of anchored) span.classList.add("has-note");
 
   const paperBox = $("paper").getBoundingClientRect();
-  const side = [$("chat"), $("qpanel")].find((x) => !x.hidden); // the open right-hand panel
+  const side = openPanelName && $(openPanelName); // the open right-hand panel
   const reserved = side ? side.offsetWidth : 0;
   const free = window.innerWidth - reserved - paperBox.right;
   if (free >= 250) {
@@ -798,32 +810,21 @@ new ResizeObserver(relayoutNotes).observe($("paper"));
 $("export").addEventListener("click", async (e) => {
   if (!current) return;
   const btn = e.currentTarget;
+  const label = "Export PDF with highlights";
   btn.disabled = true;
   btn.textContent = "Exporting…";
   try {
-    const r = await fetch(`/api/papers/${current.id}/export`, {
+    const r = await download(await fetch(`/api/papers/${current.id}/export`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ labels: effectiveLabels(current) }),
-    });
-    if (!r.ok) throw new Error(await r.text());
-    const blob = await r.blob();
-    const cd = r.headers.get("Content-Disposition") || "";
-    const name = decodeURIComponent((cd.match(/filename\*=UTF-8''([^;]+)/) || [, "highlighted.pdf"])[1]);
-    const a = el("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    }), "highlighted.pdf");
     const skipped = Number(r.headers.get("X-Skipped") || 0);
     const notes = Number(r.headers.get("X-Notes") || 0);
     btn.textContent = `Exported ${r.headers.get("X-Highlights")} highlights` + (notes ? `, ${notes} notes` : "") + (skipped ? ` (${skipped} not placeable)` : "");
   } catch (err) {
     alert(`Export failed: ${err.message || err}`);
-    btn.textContent = "Export PDF";
   }
-  setTimeout(() => { btn.textContent = "Export PDF"; btn.disabled = false; }, 2500);
+  setTimeout(() => { btn.textContent = label; btn.disabled = false; closeMenu(); }, 2500);
 });
 
 // ---------- Reading position ----------
@@ -1470,21 +1471,48 @@ document.addEventListener("keydown", (e) => {
   selTools.hidden = true;
 });
 
+// ---------- Right-hand panels ----------
+// Summary, Ask, Questions and Cards share the right side: one open at a time.
+const PANELS = { spanel: "summary-toggle", chat: "ask-toggle", qpanel: "questions-toggle", cpanel: "cards-toggle" };
+const PANEL_OPEN = {
+  spanel: () => loadSummary(),
+  chat: () => { renderChat(); $("chat-input").focus(); },
+  qpanel: () => loadQuestions(),
+  cpanel: () => loadCards(),
+};
+let openPanelName = null;
+
+function setPanel(name) {
+  openPanelName = name;
+  for (const [id, btn] of Object.entries(PANELS)) {
+    $(id).hidden = id !== name;
+    $(btn).setAttribute("aria-expanded", String(id === name));
+  }
+  document.body.classList.toggle("chat-open", !!name);
+  for (const t of Object.values(panelTimers)) clearTimeout(t);
+  relayoutNotes();
+  if (name) PANEL_OPEN[name]();
+}
+const panelTimers = {}; // polling timers of background jobs shown in panels
+for (const [id, btn] of Object.entries(PANELS)) {
+  $(btn).addEventListener("click", () => setPanel(openPanelName === id ? null : id));
+}
+for (const id of ["spanel", "qpanel", "cpanel"]) $(`${id}-close`).addEventListener("click", () => setPanel(null));
+
 // ---------- Ask (Q&A) ----------
 // Answers stream in from the local model. [n] citations become chips that
 // jump to the passage in the paper; the sources list sits under each answer.
 function setChatOpen(open) {
-  if (open && !$("qpanel").hidden) setQuestionsOpen(false); // one right-hand panel at a time
-  $("chat").hidden = !open;
-  document.body.classList.toggle("chat-open", open);
-  relayoutNotes();
-  $("ask-toggle").setAttribute("aria-expanded", String(open));
-  if (open) { renderChat(); $("chat-input").focus(); }
+  if (open) setPanel("chat");
+  else if (openPanelName === "chat") setPanel(null);
 }
-$("ask-toggle").addEventListener("click", () => setChatOpen($("chat").hidden));
 $("chat-close").addEventListener("click", () => setChatOpen(false));
 
 function jumpToSentence(sid) {
+  if (!$("qview").hidden && current) { // the questions window: jump in the reader window
+    toReader({ type: "jump", paper: current.id, sid }, `#/paper/${current.id}${sid ? `/s/${sid}` : ""}`);
+    return;
+  }
   const span = sid && $("paper").querySelector(`.s[data-sid="${sid}"]`);
   if (!span) return;
   if ($("paper").hidden) $("toggle-original").click(); // leave the original-PDF view
@@ -1703,43 +1731,58 @@ $("chat-clear").addEventListener("click", async () => {
 });
 
 // ---------- Questions ----------
-// The second tab of the Ask panel: insightful questions the AI asked about
-// its own key highlights, each with an answer found in the paper or through
-// paper/web search, and an honest status. Generated in the background on
-// request (several minutes); stored with the paper.
+// Insightful questions the AI asked about its own key highlights, each with an
+// answer found in the paper or through paper/web search, and an honest
+// status. Generated in the background on request (several minutes); stored
+// with the paper. They can also be opened in a window of their own
+// (#/paper/<id>/questions) or exported as Markdown.
 const KIND_LABELS = {
   mechanism: "Why / how", assumption: "Assumption", comparison: "Comparison", generalization: "Generalization",
   implication: "Implication", weakness: "Weakness", background: "Background",
 };
-let questionsTimer = null;
 
-function setQuestionsOpen(open) {
-  if (open && !$("chat").hidden) setChatOpen(false); // one right-hand panel at a time
-  $("qpanel").hidden = !open;
-  document.body.classList.toggle("chat-open", open);
-  $("questions-toggle").setAttribute("aria-expanded", String(open));
-  relayoutNotes();
-  if (open) loadQuestions();
-  else clearTimeout(questionsTimer);
-}
-$("questions-toggle").addEventListener("click", () => setQuestionsOpen($("qpanel").hidden));
-$("qpanel-close").addEventListener("click", () => setQuestionsOpen(false));
-
-async function loadQuestions() {
-  clearTimeout(questionsTimer);
-  if (!current || $("qpanel").hidden) return;
+// Poll a background job (summary, questions, cards) while its panel is open.
+async function loadSideJob(kind, url, panel, render) {
+  clearTimeout(panelTimers[kind]);
+  if (!current || $(panel).hidden) return;
   const id = current.id;
   let data;
   try {
-    data = await api(`/api/papers/${id}/insights`);
+    data = await api(url(id));
   } catch (e) {
-    $("questions").replaceChildren(el("p", "error", String(e.message || e)));
+    render(null, { state: "error", error: String(e.message || e) });
     return;
   }
-  if (current?.id !== id) return;
-  current.insights = data.insights;
-  renderQuestions(data.insights, data.status);
-  if (["queued", "running"].includes(data.status?.state)) questionsTimer = setTimeout(loadQuestions, 3000);
+  if (current?.id !== id || $(panel).hidden) return;
+  render(data, data.status);
+  if (["queued", "running"].includes(data.status?.state)) {
+    panelTimers[kind] = setTimeout(() => loadSideJob(kind, url, panel, render), 3000);
+  }
+}
+
+// The progress bar and error line shared by the side-job panels.
+function jobProgress(box, st, hint) {
+  const running = ["queued", "running"].includes(st?.state);
+  if (running) {
+    const prog = el("div", "q-progress");
+    prog.append(el("p", null, st.stage || "Working…"));
+    const track = el("div", "progress-track");
+    const fill = el("div", "progress-fill");
+    fill.style.width = `${Math.round((st.progress || 0) * 100)}%`;
+    track.append(fill);
+    prog.append(track);
+    if (hint) prog.append(el("p", "q-hint", hint));
+    box.append(prog);
+  }
+  if (st?.state === "error") box.append(el("p", "error", st.error || "Something went wrong."));
+  return running;
+}
+
+function loadQuestions() {
+  return loadSideJob("questions", (id) => `/api/papers/${id}/insights`, "qpanel", (data, st) => {
+    if (data) current.insights = data.insights;
+    renderQuestions($("questions"), data?.insights, st);
+  });
 }
 
 async function startQuestions() {
@@ -1748,26 +1791,13 @@ async function startQuestions() {
   loadQuestions();
 }
 
-function renderQuestions(ins, st) {
-  const box = $("questions");
+function renderQuestions(box, ins, st, standalone = false) {
   box.replaceChildren();
-  const running = ["queued", "running"].includes(st?.state);
+  const running = jobProgress(box, st, "This takes a few minutes: each answer may search papers and the web. You can keep reading.");
   const questions = ins?.questions || [];
 
-  if (running) {
-    const prog = el("div", "q-progress");
-    prog.append(el("p", null, st.stage || "Working…"));
-    const track = el("div", "progress-track");
-    const fill = el("div", "progress-fill");
-    fill.style.width = `${Math.round((st.progress || 0) * 100)}%`;
-    track.append(fill);
-    prog.append(track, el("p", "q-hint", "This takes a few minutes: each answer may search papers and the web. You can keep reading."));
-    box.append(prog);
-  }
-  if (st?.state === "error") box.append(el("p", "error", st.error || "Something went wrong."));
-
   if (!questions.length) {
-    if (!running) {
+    if (!running && !standalone) {
       const intro = el("div", "q-intro");
       intro.append(
         el("p", null, "Let the AI think about the paper's key highlights and ask the questions a sharp reader would: why it works, what it assumes, how it compares with other work, whether it generalizes, what could undermine it."),
@@ -1778,14 +1808,17 @@ function renderQuestions(ins, st) {
       go.addEventListener("click", startQuestions);
       intro.append(go);
       box.append(intro);
-    }
+    } else if (standalone && !running) box.append(el("p", "q-intro", "No questions yet. Open the paper and use Questions to generate them."));
     return;
   }
 
   const head = el("div", "q-head");
   const when = ins.at ? new Date(ins.at * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "";
-  head.append(el("span", null, `${questions.length} questions${when ? ` · ${when}` : ""}`));
-  if (!running) {
+  const counts = {};
+  for (const q of questions) counts[q.status] = (counts[q.status] || 0) + 1;
+  const tally = ["answered", "partly answered", "open"].filter((s) => counts[s]).map((s) => `${counts[s]} ${s}`).join(", ");
+  head.append(el("span", null, `${questions.length} questions${tally ? ` (${tally})` : ""}${when ? ` · ${when}` : ""}`));
+  if (!running && !standalone) {
     const redo = el("button", "link", "Ask new questions");
     redo.type = "button";
     redo.addEventListener("click", () => {
@@ -1825,14 +1858,74 @@ function questionCard(q) {
   card.append(ans);
   const follow = el("button", "link q-follow", "Follow up in Ask");
   follow.type = "button";
-  follow.addEventListener("click", () => {
-    setChatOpen(true);
-    $("chat-input").value = q.q + " ";
-    $("chat-input").focus();
-  });
+  follow.addEventListener("click", () => followUp(q.q));
   card.append(follow);
   return card;
 }
+
+function followUp(text) {
+  if (!$("qview").hidden) { // the questions window: ask in the reader window
+    toReader({ type: "ask", paper: current.id, text }, `#/paper/${current.id}`);
+    return;
+  }
+  setChatOpen(true);
+  $("chat-input").value = text + " ";
+  $("chat-input").focus();
+}
+
+$("qpanel-window").addEventListener("click", () => {
+  if (!current) return;
+  window.open(`${location.pathname}#/paper/${current.id}/questions`, `questions-${current.id}`, "popup,width=760,height=900");
+});
+$("qpanel-md").addEventListener("click", () => current && downloadMarkdown(current.id, ["questions"]));
+
+// ---- The questions window. It talks to the reader window over a
+// BroadcastChannel: "jump to this sentence", "ask this in Ask". If no reader
+// window has this paper open, it becomes the reader itself.
+const channel = "BroadcastChannel" in window ? new BroadcastChannel("papercut") : null;
+
+function toReader(msg, fallbackHash) {
+  if (!channel) { location.hash = fallbackHash; return; }
+  let answered = false;
+  const onAck = (e) => { if (e.data?.type === "ack" && e.data.paper === msg.paper) answered = true; };
+  channel.addEventListener("message", onAck);
+  channel.postMessage(msg);
+  setTimeout(() => {
+    channel.removeEventListener("message", onAck);
+    if (!answered) location.hash = fallbackHash;
+  }, 400);
+}
+
+channel?.addEventListener("message", (e) => {
+  const m = e.data || {};
+  if (!current || $("reader").hidden || m.paper !== current.id) return;
+  if (m.type === "jump") jumpToSentence(m.sid);
+  else if (m.type === "ask") { setChatOpen(true); $("chat-input").value = m.text + " "; $("chat-input").focus(); }
+  else return;
+  channel.postMessage({ type: "ack", paper: m.paper });
+  window.focus();
+});
+
+let qviewTimer = null;
+async function showQuestionsView(id) {
+  show("qview");
+  clearTimeout(qviewTimer);
+  if (current?.id !== id) {
+    try { current = await api(`/api/papers/${id}`); } catch (e) {
+      $("qv-list").replaceChildren(el("p", "error", String(e.message || e)));
+      return;
+    }
+  }
+  document.title = `Questions · ${current.meta.title}`;
+  $("qv-title").textContent = current.meta.title;
+  const data = await api(`/api/papers/${id}/insights`).catch(() => null);
+  if (!data || $("qview").hidden) return;
+  renderQuestions($("qv-list"), data.insights, data.status, true);
+  if (["queued", "running"].includes(data.status?.state)) qviewTimer = setTimeout(() => showQuestionsView(id), 3000);
+}
+$("qv-open").addEventListener("click", () => current && toReader({ type: "jump", paper: current.id, sid: null }, `#/paper/${current.id}`));
+$("qv-md").addEventListener("click", () => current && downloadMarkdown(current.id, ["questions"]));
+$("qv-print").addEventListener("click", () => window.print());
 
 // ---------- citation popup ----------
 const pop = el("div", "cite-pop");
@@ -1873,6 +1966,7 @@ function showCitation(c) {
     const p = el("p");
     if (current.refNumbers?.[id]) p.append(el("span", "ref-num", `[${current.refNumbers[id]}]`), " ");
     p.append(byId[id]?.text || "");
+    if (byId[id]) p.append(" ", refAction(id));
     return p;
   }));
   pop.hidden = false;
@@ -1883,7 +1977,7 @@ function hideCitation() { pop.hidden = true; popFor = null; }
 
 document.addEventListener("mouseover", (e) => {
   const c = e.target.closest?.(".cite, .xref");
-  if (c) showCitation(c);
+  if (c) { if (c !== popFor) showCitation(c); }
   else if (popFor && !e.target.closest?.(".cite-pop")) hideCitation();
 });
 // Tap on touch screens
@@ -1894,21 +1988,793 @@ document.addEventListener("click", (e) => {
 });
 window.addEventListener("scroll", hideCitation, { passive: true });
 
-$("toggle-original").addEventListener("click", (e) => {
-  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
-  e.currentTarget.setAttribute("aria-pressed", String(on));
+// ---------- Cited papers: open or add to the library ----------
+// A reference that is already in the library links to it; any other gets an
+// "Add to library" button: the server identifies the paper (arXiv id, DOI,
+// or a title match in OpenAlex/Crossref), downloads it and queues it.
+function refAction(block) {
+  const target = current.links?.[block];
+  if (target) {
+    const a = el("a", "ref-act in-lib", "Open in Papercut");
+    a.href = `#/paper/${target}`;
+    return a;
+  }
+  const b = el("button", "ref-act add", "Add to library");
+  b.type = "button";
+  b.addEventListener("click", (e) => { e.stopPropagation(); addReference(block, b); });
+  return b;
+}
+
+async function addReference(block, btn) {
+  const id = current.id;
+  btn.disabled = true;
+  btn.textContent = "Finding the paper…";
+  try {
+    const r = await fetch(`/api/papers/${id}/references/${block}/add`, { method: "POST" });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+    if (current?.id !== id) return;
+    current.links[block] = body.id;
+    const a = el("a", "ref-act in-lib", body.existing ? "Already in your library: open" : "Added: open (processing)");
+    a.href = `#/paper/${body.id}`;
+    a.title = body.title || "";
+    btn.replaceWith(a);
+    decorateRefs();
+  } catch (err) {
+    const msg = el("span", "ref-err", String(err.message || err));
+    btn.replaceWith(msg);
+  }
+}
+
+// The reference list: each entry gets its action on hover.
+function decorateRefs() {
+  for (const p of $("paper").querySelectorAll("p.ref[data-block]")) {
+    if (p.querySelector(".ref-err, .ref-act[disabled]")) continue;
+    p.querySelector(".ref-act")?.remove();
+    p.append(refAction(p.dataset.block));
+  }
+}
+
+async function loadConnections() {
+  const id = current.id;
+  try {
+    const c = await api(`/api/papers/${id}/connections`);
+    if (current?.id !== id) return;
+    current.connections = c;
+    for (const x of c.cites) current.links[x.block] ||= x.id;
+  } catch { if (current?.id === id) current.connections = null; }
+  if (current?.id !== id) return;
+  for (const [block, pid] of Object.entries(current.ref_links || {})) current.links[block] ||= pid;
+  decorateRefs();
+  if (openPanelName === "spanel") renderConnections();
+}
+
+// ---------- The original PDF ----------
+function setOriginalShown(on) {
+  const b = $("toggle-original");
+  b.setAttribute("aria-checked", String(on));
+  b.textContent = on ? "Show the reflowed text" : "Show original PDF";
+  if (!current) return;
   const frame = $("original");
   if (on && !frame.src) frame.src = `/api/papers/${current.id}/pdf`;
   frame.hidden = !on;
   $("paper").hidden = on;
   renderNotes(); // notes belong to the reflowed view
+}
+$("toggle-original").addEventListener("click", () => {
+  setOriginalShown($("toggle-original").getAttribute("aria-checked") !== "true");
+  closeMenu();
 });
 
 $("reprocess").addEventListener("click", async () => {
   if (!current) return;
+  closeMenu();
   await api(`/api/papers/${current.id}/reprocess`, { method: "POST" });
   const id = current.id;
-  if (await waitUntilProcessed(id)) openPaper(id);
+  if (await waitUntilProcessed(id)) { current = null; openPaper(id); }
 });
+
+// ---------- The "More" menu ----------
+function closeMenu() {
+  $("more-menu").hidden = true;
+  $("more-toggle").setAttribute("aria-expanded", "false");
+}
+$("more-toggle").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const open = $("more-menu").hidden;
+  $("more-menu").hidden = !open;
+  $("more-toggle").setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap")) closeMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+
+// ---------- Downloads ----------
+async function download(r, fallback) {
+  if (!r.ok) throw new Error(await r.text());
+  const blob = await r.blob();
+  const cd = r.headers.get("Content-Disposition") || "";
+  const name = decodeURIComponent((cd.match(/filename\*=UTF-8''([^;]+)/) || [, fallback])[1]);
+  const a = el("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  return r;
+}
+
+// ---------- Markdown export ----------
+const MD_PARTS = [
+  ["summary", "Summary"], ["highlights", "Highlights (with the AI's margin notes)"], ["notes", "My notes"],
+  ["questions", "Questions and answers"], ["cards", "Flashcards"], ["chat", "Ask history"],
+];
+for (const [v, label] of MD_PARTS) {
+  const l = el("label");
+  const cb = el("input");
+  cb.type = "checkbox";
+  cb.value = v;
+  cb.checked = v !== "chat";
+  l.append(cb, " ", label);
+  $("md-parts").append(l);
+}
+$("export-md").addEventListener("click", () => { closeMenu(); $("md-dialog").showModal(); });
+$("md-dialog").addEventListener("close", () => {
+  if ($("md-dialog").returnValue !== "ok" || !current) return;
+  const parts = [...$("md-parts").querySelectorAll("input:checked")].map((x) => x.value);
+  if (parts.length) downloadMarkdown(current.id, parts);
+});
+
+async function downloadMarkdown(id, parts) {
+  const q = new URLSearchParams({ parts: parts.join(","), hidden: settings.hidden.join(",") });
+  try {
+    await download(await fetch(`/api/papers/${id}/markdown?${q}`), "notes.md");
+  } catch (err) {
+    alert(`Export failed: ${err.message || err}`);
+  }
+}
+
+// ---------- Summary ----------
+// A one-page summary the model writes from its own reading notes and key
+// highlights (written automatically after highlighting), and how the paper
+// connects to the rest of the library.
+function loadSummary() {
+  renderConnections();
+  return loadSideJob("summary", (id) => `/api/papers/${id}/summary`, "spanel", (data, st) => {
+    if (data) current.summary = data.summary;
+    renderSummary(data?.summary, st);
+  });
+}
+
+async function startSummary() {
+  if (!current) return;
+  await api(`/api/papers/${current.id}/summary`, { method: "POST" }).catch(() => {});
+  loadSummary();
+}
+
+function pageOf(sid) {
+  return current.sentences[sid]?.rects?.[0]?.page;
+}
+
+// Small chips after a summary line: jump to the highlights it rests on.
+function jumpChips(sids) {
+  const frag = document.createDocumentFragment();
+  for (const sid of sids || []) {
+    if (!current.sentences[sid]) continue;
+    const c = el("button", "chip", pageOf(sid) ? `p. ${pageOf(sid)}` : "↗");
+    c.type = "button";
+    c.title = current.sentences[sid].text;
+    c.addEventListener("click", () => jumpToSentence(sid));
+    frag.append(" ", c);
+  }
+  return frag;
+}
+
+function renderSummary(s, st) {
+  const box = $("summary");
+  box.replaceChildren();
+  const running = jobProgress(box, st, "Written from the AI's reading notes and highlights; about a minute.");
+  if (!s) {
+    if (!running) {
+      const intro = el("div", "q-intro");
+      intro.append(el("p", null, "A one-page cheat sheet of the paper: the problem, the approach, the key results with their numbers, the contributions, the limitations and the questions it leaves open. Each point links back to the sentences it rests on."));
+      if (current.status?.classified) {
+        const go = el("button", "q-go", "Write the summary");
+        go.type = "button";
+        go.addEventListener("click", startSummary);
+        intro.append(go);
+      } else intro.append(el("p", null, "It is written from the AI highlights, which this paper doesn't have yet."));
+      box.append(intro);
+    }
+    box.append(el("div", "s-conn"));
+    renderConnections();
+    return;
+  }
+  const meta = [s.authors, [s.venue, s.year].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+  if (meta) box.append(el("p", "s-meta", meta));
+  if (s.topics?.length) {
+    const t = el("div", "s-topics");
+    for (const x of s.topics) t.append(el("span", "topic", x));
+    box.append(t);
+  }
+  const tl = el("p", "s-tldr");
+  tl.append(el("strong", null, "TL;DR "), s.tldr);
+  box.append(tl);
+  const section = (title, node) => {
+    const sec = el("section", "s-sec");
+    sec.append(el("h4", null, title), node);
+    box.append(sec);
+  };
+  const list = (items) => {
+    const ul = el("ul");
+    for (const it of items) {
+      const li = el("li", null, it.text ?? it);
+      if (it.highlights) li.append(jumpChips(it.highlights));
+      ul.append(li);
+    }
+    return ul;
+  };
+  if (s.problem) section("Problem", el("p", null, s.problem));
+  if (s.approach) section("Approach", el("p", null, s.approach));
+  if (s.results?.length) section("Key results", list(s.results));
+  if (s.contributions?.length) section("Contributions", list(s.contributions));
+  if (s.limitations?.length) section("Limitations", list(s.limitations));
+  if (s.open_questions?.length) section("Open questions", list(s.open_questions));
+  const foot = el("div", "q-head");
+  const when = s.at ? new Date(s.at * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "";
+  foot.append(el("span", null, `Written by the local model${when ? ` · ${when}` : ""}`));
+  if (!running) {
+    const redo = el("button", "link", "Rewrite");
+    redo.type = "button";
+    redo.addEventListener("click", () => { if (confirm("Write the summary again?")) startSummary(); });
+    foot.append(redo);
+  }
+  box.append(foot, el("div", "s-conn"));
+  renderConnections();
+}
+
+function renderConnections() {
+  const box = $("summary").querySelector(".s-conn");
+  if (!box || !current) return;
+  box.replaceChildren(el("h4", null, "In your library"));
+  const c = current.connections;
+  if (c === undefined) { box.append(el("p", "pending", "Looking for connections…")); return; }
+  if (!c || (!c.cites.length && !c.cited_by.length && !c.related.length)) {
+    box.append(el("p", "s-none", "No other papers in your library connect to this one yet."));
+    return;
+  }
+  const group = (title, items, extra) => {
+    if (!items.length) return;
+    box.append(el("p", "s-conn-head", title));
+    const ul = el("ul", "s-conn-list");
+    for (const it of items) {
+      const li = el("li");
+      const a = el("a", null, it.title);
+      a.href = `#/paper/${it.id}`;
+      li.append(a);
+      const more = extra(it);
+      if (more) li.append(el("span", "s-conn-extra", more));
+      ul.append(li);
+    }
+    box.append(ul);
+  };
+  group("This paper cites", c.cites, (x) => `reference [${x.n}]`);
+  group("Cited by", c.cited_by, () => "");
+  group("Closest in content", c.related.filter((x) => x.score >= 0.6),
+        (x) => `${Math.round(x.score * 100)}% similar` + (x.shared.length ? ` · ${x.shared.join(", ")}` : ""));
+}
+
+// ---------- Flashcards ----------
+function loadCards() {
+  return loadSideJob("cards", (id) => `/api/papers/${id}/cards`, "cpanel", (data, st) => {
+    if (data) current.cards = data.cards;
+    renderCards(data, st);
+  });
+}
+
+async function startCards() {
+  if (!current) return;
+  await api(`/api/papers/${current.id}/cards`, { method: "POST" }).catch(() => {});
+  loadCards();
+}
+
+let cardDraft = null; // {sid, back}: "Make a flashcard" from a sentence
+
+function newCardFrom(sid) {
+  cardDraft = { sid, back: current.sentences[sid]?.text || "" };
+  if (openPanelName === "cpanel") loadCards();
+  else setPanel("cpanel");
+}
+
+function renderCards(data, st) {
+  const box = $("cards");
+  box.replaceChildren();
+  const running = jobProgress(box, st, "Written from the summary, highlights and answered questions; about a minute.");
+  const deck = data?.cards?.cards || [];
+  const rv = data?.review;
+  if (deck.length) {
+    const head = el("div", "fc-head");
+    const due = rv ? rv.due + Math.min(rv.new, 20) : 0;
+    head.append(el("span", null, `${deck.length} cards` + (rv ? ` · ${rv.due} due · ${rv.new} new` : "")));
+    const go = el("a", "btn primary", due ? `Review ${due}` : "Review");
+    go.href = `#/review/${current.id}`;
+    head.append(go);
+    box.append(head);
+  } else if (!running) {
+    const intro = el("div", "q-intro");
+    intro.append(el("p", null, "Flashcards for what's worth remembering in this paper: the core idea, key design decisions, results with their numbers, definitions and limitations. Review them under Review at the top: each comes back just before you would forget it."));
+    const go = el("button", "q-go", "Make flashcards");
+    go.type = "button";
+    go.addEventListener("click", startCards);
+    intro.append(go);
+    box.append(intro);
+  }
+
+  // Your own card.
+  const add = el("details", "fc-add");
+  add.append(el("summary", null, "Add your own card"));
+  const front = el("textarea");
+  front.rows = 2;
+  front.placeholder = "Front: a question";
+  const back = el("textarea");
+  back.rows = 3;
+  back.placeholder = "Back: the answer";
+  const save = el("button", "primary", "Add card");
+  save.type = "button";
+  const sid = cardDraft?.sid || null;
+  if (cardDraft) { add.open = true; back.value = cardDraft.back; cardDraft = null; setTimeout(() => front.focus(), 0); }
+  save.addEventListener("click", async () => {
+    try {
+      await api(`/api/papers/${current.id}/cards/new`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ front: front.value, back: back.value, sid }),
+      });
+      loadCards();
+    } catch (err) { alert(`Could not add the card: ${err.message || err}`); }
+  });
+  add.append(front, back, save);
+  box.append(add);
+
+  for (const c of deck) box.append(flashcard(c));
+  if (deck.length && !running) {
+    const redo = el("button", "link", "Write new AI cards");
+    redo.type = "button";
+    redo.addEventListener("click", () => {
+      if (confirm("Replace the AI's cards with new ones? Your own cards stay.")) startCards();
+    });
+    box.append(redo);
+  }
+}
+
+function flashcard(c) {
+  const card = el("article", "fc-card");
+  const meta = el("div", "q-meta");
+  meta.append(el("span", "q-kind", c.kind + (c.by === "you" ? " · yours" : "")));
+  const del = el("button", "link fc-del", "Delete");
+  del.type = "button";
+  del.addEventListener("click", async () => {
+    if (!confirm("Delete this card?")) return;
+    await api(`/api/papers/${current.id}/cards/${c.id}`, { method: "DELETE" }).catch(() => {});
+    loadCards();
+  });
+  meta.append(del);
+  const back = el("div", "fc-back");
+  back.hidden = true;
+  back.append(el("p", null, c.back), jumpChips(c.highlights));
+  const reveal = el("button", "link", "Show answer");
+  reveal.type = "button";
+  reveal.addEventListener("click", () => {
+    back.hidden = !back.hidden;
+    reveal.textContent = back.hidden ? "Show answer" : "Hide answer";
+  });
+  card.append(meta, el("p", "fc-front", c.front), back, reveal);
+  return card;
+}
+
+// ---------- Review ----------
+// Spaced repetition across the library (or one paper): due cards first, then
+// up to 20 new ones. Space shows the answer; 1-4 grade it.
+const GRADES = [["again", "Again"], ["hard", "Hard"], ["good", "Good"], ["easy", "Easy"]];
+let rv = null;
+
+function fmtInterval(sec) {
+  if (sec < 3600) return `${Math.max(1, Math.round(sec / 60))} min`;
+  if (sec < 86400) return `${Math.round(sec / 3600)} h`;
+  const d = sec / 86400;
+  if (d < 30) return `${Math.round(d)} d`;
+  if (d < 365) return `${Math.round(d / 30)} mo`;
+  return `${(d / 365).toFixed(1)} y`;
+}
+
+async function refreshReviewCount() {
+  try {
+    const r = await api("/api/review");
+    const n = r.queue.length;
+    $("review-count").textContent = String(n);
+    $("review-count").hidden = !n;
+  } catch {}
+}
+
+async function showReview(pid) {
+  show("review");
+  document.title = "Review · Papercut";
+  $("rv-stage").replaceChildren(el("p", "pending", "Loading cards…"));
+  let data;
+  try {
+    data = await api(`/api/review${pid ? `?paper=${pid}` : ""}`);
+  } catch (e) {
+    $("rv-stage").replaceChildren(el("p", "error", String(e.message || e)));
+    return;
+  }
+  rv = { paper: pid, queue: data.queue, i: 0, shown: false, reviewed: 0, data };
+  $("rv-title").textContent = pid ? "Review this paper" : "Review";
+  renderReview();
+}
+
+function renderReview() {
+  const stage = $("rv-stage");
+  stage.replaceChildren();
+  const card = rv.queue[rv.i];
+  $("rv-count").textContent = card ? `${rv.queue.length - rv.i} to go` : "";
+  if (!card) { reviewDone(stage); return; }
+  const box = el("article", "rv-card");
+  const top = el("div", "rv-top");
+  const t = el("a", "rv-paper", card.title);
+  t.href = `#/paper/${card.paper}`;
+  top.append(t, el("span", "q-kind", card.kind + (card.state ? "" : " · new")));
+  box.append(top, el("p", "rv-front", card.front));
+  const actions = el("div", "rv-actions");
+  if (!rv.shown) {
+    const showBtn = el("button", "primary rv-show", "Show answer");
+    showBtn.type = "button";
+    showBtn.title = "Space";
+    showBtn.addEventListener("click", () => { rv.shown = true; renderReview(); });
+    actions.append(showBtn);
+  } else {
+    const back = el("div", "rv-back");
+    back.append(el("p", null, card.back));
+    for (const sid of card.highlights || []) {
+      const a = el("a", "rv-source", "See it in the paper");
+      a.href = `#/paper/${card.paper}/s/${sid}`;
+      back.append(a);
+      break;
+    }
+    box.append(back);
+    GRADES.forEach(([g, label], i) => {
+      const b = el("button", `rv-grade rv-${g}`);
+      b.type = "button";
+      b.title = `${label} (${i + 1})`;
+      b.append(el("strong", null, label), el("span", null, fmtInterval(card.next[g])));
+      b.addEventListener("click", () => gradeCard(g));
+      actions.append(b);
+    });
+  }
+  stage.append(box, actions, el("p", "rv-keys", rv.shown ? "Keys: 1 Again · 2 Hard · 3 Good · 4 Easy" : "Key: Space shows the answer"));
+}
+
+async function gradeCard(g) {
+  const card = rv.queue[rv.i];
+  let state;
+  try {
+    state = await api(`/api/review/${card.paper}/${card.id}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ grade: g }),
+    });
+  } catch (err) { alert(`Could not save: ${err.message || err}`); return; }
+  rv.reviewed++;
+  if (g === "again") { // back at the end of this session
+    const now = Date.now() / 1000;
+    rv.queue.push({ ...card, state, next: { again: 60, hard: 86400, good: 86400, easy: 4 * 86400 }, _at: now });
+  }
+  rv.i++;
+  rv.shown = false;
+  renderReview();
+  refreshReviewCount();
+}
+
+document.addEventListener("keydown", (e) => {
+  if ($("review").hidden || !rv || e.target.closest("input, textarea, select")) return;
+  const card = rv.queue[rv.i];
+  if (!card) return;
+  if (!rv.shown && (e.key === " " || e.key === "Enter")) { e.preventDefault(); rv.shown = true; renderReview(); }
+  else if (rv.shown && /^[1-4]$/.test(e.key)) gradeCard(GRADES[Number(e.key) - 1][0]);
+});
+
+async function reviewDone(stage) {
+  const box = el("div", "rv-done");
+  box.append(el("h3", null, rv.reviewed ? "All caught up." : "Nothing to review right now."));
+  const d = rv.data;
+  if (rv.reviewed) box.append(el("p", null, `You reviewed ${rv.reviewed} card${rv.reviewed > 1 ? "s" : ""}.`));
+  if (d.next_due) box.append(el("p", null, `The next card is due in ${fmtInterval(d.next_due - Date.now() / 1000)}.`));
+  if (!d.total) box.append(el("p", null, rv.paper ? "This paper has no flashcards yet." : "No paper has flashcards yet."));
+  stage.append(box);
+  // Papers without cards: make them here.
+  let lib2;
+  try { lib2 = await api("/api/library"); } catch { return; }
+  const missing = lib2.papers.filter((p) => !p.processing && !p.cards && p.classified && (!rv.paper || p.id === rv.paper));
+  if (!missing.length) return;
+  const sec = el("div", "rv-missing");
+  sec.append(el("p", null, `${missing.length} paper${missing.length > 1 ? "s have" : " has"} no flashcards yet:`));
+  const ul = el("ul");
+  for (const p of missing) ul.append(el("li", null, p.title));
+  const all = el("button", "primary", missing.length > 1 ? `Make cards for all ${missing.length}` : "Make cards");
+  all.type = "button";
+  all.addEventListener("click", async () => {
+    all.disabled = true;
+    for (const p of missing) await api(`/api/papers/${p.id}/cards`, { method: "POST" }).catch(() => {});
+    all.textContent = "Queued: the cards appear here as each paper is done (a minute or two each).";
+  });
+  sec.append(ul, all);
+  box.append(sec);
+}
+
+// ---------- Library ----------
+// Every paper, grouped into collections (the AI proposes them; you can move a
+// paper), with status (to read / reading / done), tags, and search: instant
+// over titles, authors, topics and summaries, and after a pause through the
+// text of every paper.
+let lib = { papers: [], collections: [] };
+const libView = { status: "all", col: null, q: "" }; // col: null = all, "" = none, else a name
+try { Object.assign(libView, JSON.parse(localStorage.getItem("libView") || "{}"), { q: "" }); } catch {}
+let libTimer = null, searchTimer = null, searchRun = 0;
+
+async function loadLibrary() {
+  clearTimeout(libTimer);
+  try { lib = await api("/api/library"); } catch { lib = { papers: [], collections: [] }; }
+  renderLibrary();
+  // Poll while the AI is organizing or papers are still processing.
+  const busy = ["queued", "running"].includes(lib.organize?.state) || lib.papers.some((p) => p.processing);
+  if (busy) libTimer = setTimeout(() => { if (!$("home").hidden) loadLibrary(); }, 4000);
+}
+
+function saveLibView() {
+  try { localStorage.setItem("libView", JSON.stringify({ status: libView.status, col: libView.col })); } catch {}
+}
+
+function libMatches(p, q) {
+  if (!q) return true;
+  const hay = [p.title, p.authors, p.venue, p.year, p.tldr, p.collection, ...(p.topics || []), ...(p.tags || [])]
+    .join(" ").toLowerCase();
+  return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
+}
+
+function renderLibrary() {
+  const papers = lib.papers;
+  $("lib-count").textContent = papers.length ? `(${papers.length})` : "";
+  for (const b of $("lib-status").children) b.setAttribute("aria-pressed", String(b.dataset.v === libView.status));
+  $("lib-sort").value = settings.libSort || "opened";
+
+  // Continue reading: started but not finished, most recent first.
+  const going = papers.filter((p) => p.status === "reading" && p.opened).sort((a, b) => b.opened - a.opened).slice(0, 3);
+  $("continue").hidden = !going.length || !!libView.q;
+  $("continue-list").replaceChildren(...going.map((p) => {
+    const a = el("a", "cont-card");
+    a.href = `#/paper/${p.id}`;
+    a.append(el("span", "cont-title", p.title));
+    const bar = el("span", "cont-bar");
+    const fill = el("span");
+    fill.style.width = `${Math.round(p.percent || 0)}%`;
+    bar.append(fill);
+    a.append(bar, el("span", "cont-pct", `${Math.round(p.percent || 0)}% read`));
+    return a;
+  }));
+
+  // Collections.
+  const cols = $("lib-cols");
+  cols.replaceChildren();
+  const byCol = {};
+  for (const p of papers) byCol[p.collection || ""] = (byCol[p.collection || ""] || 0) + 1;
+  const names = [...new Set([...lib.collections.map((c) => c.name), ...papers.map((p) => p.collection).filter(Boolean)])];
+  const colBtn = (label, value, count, about) => {
+    const b = el("button", "col-btn");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(libView.col === value));
+    b.append(el("span", null, label), el("span", "count-muted", String(count)));
+    if (about) b.title = about;
+    b.addEventListener("click", () => { libView.col = value; saveLibView(); renderLibrary(); });
+    cols.append(b);
+  };
+  colBtn("All papers", null, papers.length);
+  for (const n of names) colBtn(n, n, byCol[n] || 0, lib.collections.find((c) => c.name === n)?.about);
+  if (byCol[""]) colBtn("Not in a collection", "", byCol[""]);
+  if (libView.col && !names.includes(libView.col)) libView.col = null;
+  const org = lib.organize || {};
+  const busy = ["queued", "running"].includes(org.state);
+  const orgBtn = el("button", "link col-org", busy ? "Organizing…" : lib.collections.length ? "Reorganize with AI" : "Organize with AI");
+  orgBtn.type = "button";
+  orgBtn.disabled = busy;
+  orgBtn.title = "Let the local model group your papers into collections by theme. Papers you moved yourself stay where you put them.";
+  orgBtn.addEventListener("click", async () => {
+    const fresh = lib.collections.length && confirm("Start the collections over? (Cancel keeps the current collections and only files papers that have none.)");
+    await api("/api/library/organize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fresh: !!fresh }) }).catch(() => {});
+    loadLibrary();
+  });
+  cols.append(orgBtn);
+  if (org.state === "error") cols.append(el("p", "error small", org.error));
+
+  // Papers.
+  const sort = settings.libSort || "opened";
+  const cmp = {
+    opened: (a, b) => (b.opened || 0) - (a.opened || 0) || (b.added || 0) - (a.added || 0),
+    added: (a, b) => (b.added || 0) - (a.added || 0),
+    title: (a, b) => a.title.localeCompare(b.title),
+    year: (a, b) => (b.year || "0").localeCompare(a.year || "0") || a.title.localeCompare(b.title),
+  }[sort];
+  const shown = papers
+    .filter((p) => libView.status === "all" || p.status === libView.status)
+    .filter((p) => libView.col === null || (p.collection || "") === libView.col)
+    .filter((p) => libMatches(p, libView.q))
+    .sort(cmp);
+  const list = $("lib-list");
+  list.replaceChildren(...shown.map(libRow));
+  if (!papers.length) list.append(el("p", "lib-empty", "No papers yet. Drop a PDF above or paste a link."));
+  else if (!shown.length) list.append(el("p", "lib-empty", libView.q ? "No titles, authors or topics match. Matches inside your papers are below." : "No papers here."));
+}
+
+function libRow(p) {
+  const row = el("article", "lib-row");
+  const main = el("div", "lib-row-main");
+  const a = el("a", "lib-title", p.title);
+  a.href = `#/paper/${p.id}`;
+  main.append(a);
+  const meta = [p.authors, [p.venue, p.year].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+  if (meta) main.append(el("div", "lib-meta", meta));
+  if (p.processing) main.append(el("div", "lib-meta", "Processing…"));
+  if (p.tldr) main.append(el("p", "lib-tldr", p.tldr));
+  const tags = el("div", "lib-tags");
+  for (const t of p.topics || []) {
+    const b = el("button", "topic", t);
+    b.type = "button";
+    b.title = "Show papers on this topic";
+    b.addEventListener("click", () => { $("lib-search").value = t; onLibSearch(); });
+    tags.append(b);
+  }
+  for (const t of p.tags || []) {
+    const b = el("span", "tag");
+    b.append(t);
+    const x = el("button", "tag-x", "×");
+    x.type = "button";
+    x.title = "Remove this tag";
+    x.addEventListener("click", () => setShelf(p, { tags: p.tags.filter((y) => y !== t) }));
+    b.append(x);
+    tags.append(b);
+  }
+  const addTag = el("button", "tag-add", "+ tag");
+  addTag.type = "button";
+  addTag.addEventListener("click", () => {
+    const input = el("input", "tag-input");
+    input.placeholder = "tag";
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && input.value.trim()) setShelf(p, { tags: [...(p.tags || []), input.value.trim()] });
+      if (e.key === "Escape") renderLibrary();
+    });
+    input.addEventListener("blur", () => { if (input.value.trim()) setShelf(p, { tags: [...(p.tags || []), input.value.trim()] }); });
+    addTag.replaceWith(input);
+    input.focus();
+  });
+  if (!p.processing) tags.append(addTag);
+  main.append(tags);
+
+  const side = el("div", "lib-side");
+  if (!p.processing) {
+    const status = el("select", "lib-sel");
+    status.setAttribute("aria-label", "Status");
+    for (const [v, label] of [["to-read", "To read"], ["reading", "Reading"], ["done", "Done"]]) status.append(new Option(label, v));
+    status.value = p.status;
+    status.title = p.status_set ? "Set by you" : "From your reading progress";
+    status.addEventListener("change", () => setShelf(p, { status: status.value }));
+    const col = el("select", "lib-sel");
+    col.setAttribute("aria-label", "Collection");
+    col.append(new Option("No collection", ""));
+    const names = [...new Set([...lib.collections.map((c) => c.name), ...lib.papers.map((x) => x.collection).filter(Boolean)])];
+    for (const n of names) col.append(new Option(n, n));
+    col.append(new Option("New collection…", "__new"));
+    col.value = p.collection || "";
+    col.title = p.collection_set_by === "ai" ? "Chosen by the AI" : p.collection_set_by === "you" ? "Chosen by you" : "";
+    col.addEventListener("change", () => {
+      let v = col.value;
+      if (v === "__new") {
+        v = (prompt("Name of the new collection:") || "").trim();
+        if (!v) { col.value = p.collection || ""; return; }
+      }
+      setShelf(p, { collection: v || null });
+    });
+    side.append(status, col);
+    if (p.percent >= 1) {
+      const bar = el("span", "cont-bar");
+      const fill = el("span");
+      fill.style.width = `${Math.round(p.percent)}%`;
+      bar.append(fill);
+      side.append(bar);
+    }
+    const counts = [
+      p.highlights && `${p.highlights} highlights`, p.notes && `${p.notes} notes`,
+      p.questions && `${p.questions} questions`, p.cards && `${p.cards} cards`,
+    ].filter(Boolean).join(" · ");
+    if (counts) side.append(el("span", "lib-counts", counts));
+  }
+  row.append(main, side);
+  return row;
+}
+
+async function setShelf(p, patch) {
+  try {
+    await api(`/api/library/${p.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+  } catch (err) { alert(`Could not save: ${err.message || err}`); }
+  loadLibrary();
+}
+
+$("lib-status").addEventListener("click", (e) => {
+  const v = e.target.closest("button")?.dataset.v;
+  if (!v) return;
+  libView.status = v;
+  saveLibView();
+  renderLibrary();
+});
+$("lib-sort").addEventListener("change", (e) => { updateSettings({ libSort: e.target.value }); renderLibrary(); });
+
+// Search: instant over the list; after a pause, through the papers' text.
+function onLibSearch() {
+  libView.q = $("lib-search").value.trim();
+  renderLibrary();
+  clearTimeout(searchTimer);
+  if (libView.q.length < 3) { $("lib-inside").hidden = true; return; }
+  searchTimer = setTimeout(searchInside, 450);
+}
+$("lib-search").addEventListener("input", onLibSearch);
+$("lib-search").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { clearTimeout(searchTimer); searchInside(); }
+  if (e.key === "Escape") { $("lib-search").value = ""; onLibSearch(); }
+});
+
+async function searchInside() {
+  const q = libView.q;
+  if (!q) return;
+  const run = ++searchRun;
+  const box = $("lib-passages");
+  $("lib-inside").hidden = false;
+  box.replaceChildren(el("p", "pending", "Searching inside your papers…"));
+  let r;
+  try { r = await api(`/api/search?q=${encodeURIComponent(q)}`); } catch (e) {
+    box.replaceChildren(el("p", "error", String(e.message || e)));
+    return;
+  }
+  if (run !== searchRun) return;
+  box.replaceChildren();
+  if (!r.passages.length) { box.append(el("p", "lib-empty", "Nothing found inside the papers.")); return; }
+  const words = q.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  const mark = (text) => {
+    const frag = document.createDocumentFragment();
+    if (!words.length) { frag.append(text); return frag; }
+    const re = new RegExp(`(${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
+    let pos = 0, m;
+    while ((m = re.exec(text))) {
+      frag.append(text.slice(pos, m.index), el("mark", null, m[0]));
+      pos = m.index + m[0].length;
+    }
+    frag.append(text.slice(pos));
+    return frag;
+  };
+  const byPaper = new Map();
+  for (const p of r.passages) {
+    if (!byPaper.has(p.paper)) byPaper.set(p.paper, []);
+    byPaper.get(p.paper).push(p);
+  }
+  for (const [pid, items] of byPaper) {
+    const g = el("div", "hit-group");
+    const t = el("a", "hit-paper", items[0].title);
+    t.href = `#/paper/${pid}`;
+    g.append(t);
+    for (const it of items.slice(0, 3)) {
+      const a = el("a", "hit");
+      a.href = `#/paper/${pid}/s/${it.sid}`;
+      if (it.heading) a.append(el("span", "hit-head", it.heading));
+      const p = el("span", "hit-text");
+      p.append(mark(it.text + (it.text.length >= 400 ? "…" : "")));
+      a.append(p);
+      g.append(a);
+    }
+    box.append(g);
+  }
+}
 
 route();

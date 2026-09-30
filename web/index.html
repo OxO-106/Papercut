@@ -18,15 +18,30 @@
 </head>
 <body>
   <header class="bar">
-    <a class="brand" href="#/"><img src="icons/favicon.svg" alt="" width="24" height="24">Papercut</a>
+    <div class="bar-left">
+      <a class="brand" href="#/"><img src="icons/favicon.svg" alt="" width="24" height="24">Papercut</a>
+      <nav class="top-nav" aria-label="Main">
+        <a id="nav-library" href="#/">Library</a>
+        <a id="nav-review" href="#/review">Review <span id="review-count" class="count" hidden></span></a>
+      </nav>
+    </div>
     <div class="bar-actions">
       <span id="paper-actions" class="bar-actions" hidden>
         <button id="outline-toggle" type="button" aria-expanded="false" aria-controls="outline" title="Show or hide the outline">Outline</button>
+        <button id="summary-toggle" type="button" aria-expanded="false" aria-controls="spanel" title="A one-page summary, and how this paper connects to your library">Summary</button>
         <button id="ask-toggle" type="button" aria-expanded="false" aria-controls="chat">Ask</button>
         <button id="questions-toggle" type="button" aria-expanded="false" aria-controls="qpanel" title="Insightful questions about the key highlights, with answers">Questions</button>
-        <button id="toggle-original" type="button">Original PDF</button>
-        <button id="export" type="button" title="Download the original PDF with these highlights">Export PDF</button>
-        <button id="reprocess" type="button" title="Parse this paper again">Reprocess</button>
+        <button id="cards-toggle" type="button" aria-expanded="false" aria-controls="cpanel" title="Flashcards for this paper">Cards</button>
+        <span class="menu-wrap">
+          <button id="more-toggle" type="button" aria-expanded="false" aria-controls="more-menu" aria-haspopup="menu" title="More">More ▾</button>
+          <div id="more-menu" class="menu" role="menu" hidden>
+            <button id="toggle-original" type="button" role="menuitemcheckbox" aria-checked="false">Show original PDF</button>
+            <button id="export" type="button" role="menuitem" title="Download the original PDF with these highlights">Export PDF with highlights</button>
+            <button id="export-md" type="button" role="menuitem" title="Summary, highlights, notes, questions and cards as a Markdown file">Export Markdown…</button>
+            <hr>
+            <button id="reprocess" type="button" role="menuitem" title="Parse this paper again">Reprocess the PDF</button>
+          </div>
+        </span>
       </span>
       <button id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings" title="Reading settings">Aa</button>
     </div>
@@ -86,11 +101,43 @@
 
   <aside id="qpanel" class="chat" hidden aria-label="Questions about this paper">
     <div class="chat-head">
-      <strong>Questions about this paper</strong>
-      <span><button id="qpanel-close" type="button" class="panel-close" aria-label="Close">×</button></span>
+      <strong>Questions</strong>
+      <span>
+        <button id="qpanel-md" type="button" class="link" title="Download the questions and answers as Markdown">Export</button>
+        <button id="qpanel-window" type="button" class="link" title="Open the questions in their own window">Open in window</button>
+        <button id="qpanel-close" type="button" class="panel-close" aria-label="Close">×</button>
+      </span>
     </div>
     <div id="questions" class="chat-log questions"></div>
   </aside>
+
+  <aside id="spanel" class="chat" hidden aria-label="Summary of this paper">
+    <div class="chat-head">
+      <strong>Summary</strong>
+      <span><button id="spanel-close" type="button" class="panel-close" aria-label="Close">×</button></span>
+    </div>
+    <div id="summary" class="chat-log summary"></div>
+  </aside>
+
+  <aside id="cpanel" class="chat" hidden aria-label="Flashcards for this paper">
+    <div class="chat-head">
+      <strong>Flashcards</strong>
+      <span><button id="cpanel-close" type="button" class="panel-close" aria-label="Close">×</button></span>
+    </div>
+    <div id="cards" class="chat-log cards"></div>
+  </aside>
+
+  <dialog id="md-dialog" class="dialog">
+    <form method="dialog" id="md-form">
+      <h3>Export Markdown</h3>
+      <p class="dialog-hint">A Markdown file for Obsidian, Notion or any notes app. Page numbers point back to the PDF.</p>
+      <div id="md-parts" class="md-parts"></div>
+      <div class="dialog-actions">
+        <button type="submit" value="cancel" class="link">Cancel</button>
+        <button type="submit" value="ok" id="md-go" class="primary">Download</button>
+      </div>
+    </form>
+  </dialog>
 
   <aside id="chat" class="chat" hidden aria-label="Ask about this paper">
     <div class="chat-head">
@@ -116,21 +163,81 @@
   <div id="picker" class="picker" hidden role="menu" aria-label="Highlight this sentence"></div>
 
   <main id="home" class="home" hidden>
-    <label id="drop" class="drop">
-      <input id="file" type="file" accept="application/pdf" hidden>
-      <strong>Drop a PDF here</strong>
-      <span>or click to choose a file</span>
-    </label>
-    <form id="link-form" class="link-form">
-      <input id="link-input" type="text" inputmode="url" autocomplete="off" spellcheck="false"
-             placeholder="…or paste an arXiv link or ID, a DOI, or a PDF link" aria-label="Paper link">
-      <button type="submit">Open</button>
-    </form>
+    <div class="add-row">
+      <label id="drop" class="drop">
+        <input id="file" type="file" accept="application/pdf" hidden>
+        <strong>Drop a PDF here</strong>
+        <span>or click to choose a file</span>
+      </label>
+      <form id="link-form" class="link-form">
+        <input id="link-input" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+               placeholder="…or paste an arXiv link or ID, a DOI, or a PDF link" aria-label="Paper link">
+        <button type="submit">Open</button>
+      </form>
+    </div>
     <p id="link-error" class="error" hidden></p>
-    <section>
-      <h2>Recent</h2>
-      <ul id="recent" class="recent"></ul>
+
+    <section id="continue" class="continue" hidden>
+      <h2>Continue reading</h2>
+      <div id="continue-list" class="continue-list"></div>
     </section>
+
+    <section class="lib">
+      <div class="lib-head">
+        <h2>Library <span id="lib-count" class="count-muted"></span></h2>
+        <input id="lib-search" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search titles, authors, topics, or anything inside your papers…" aria-label="Search the library">
+      </div>
+      <div class="lib-tools">
+        <div class="seg lib-status" id="lib-status" role="group" aria-label="Filter by status">
+          <button type="button" data-v="all">All</button>
+          <button type="button" data-v="to-read">To read</button>
+          <button type="button" data-v="reading">Reading</button>
+          <button type="button" data-v="done">Done</button>
+        </div>
+        <label class="lib-sort">Sort
+          <select id="lib-sort">
+            <option value="opened">Last opened</option>
+            <option value="added">Recently added</option>
+            <option value="title">Title</option>
+            <option value="year">Year</option>
+          </select>
+        </label>
+      </div>
+      <div class="lib-body">
+        <nav id="lib-cols" class="lib-cols" aria-label="Collections"></nav>
+        <div class="lib-main">
+          <div id="lib-list" class="lib-list"></div>
+          <section id="lib-inside" class="lib-inside" hidden>
+            <h3>Inside your papers</h3>
+            <div id="lib-passages"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <main id="review" class="review" hidden>
+    <div class="rv-head">
+      <h2 id="rv-title">Review</h2>
+      <span id="rv-count" class="count-muted"></span>
+    </div>
+    <div id="rv-stage"></div>
+  </main>
+
+  <main id="qview" class="qview" hidden>
+    <div class="qv-head">
+      <div>
+        <p class="qv-kicker">Questions about</p>
+        <h1 id="qv-title"></h1>
+      </div>
+      <span class="qv-actions">
+        <button id="qv-open" type="button">Open the paper</button>
+        <button id="qv-md" type="button">Export Markdown</button>
+        <button id="qv-print" type="button">Print</button>
+      </span>
+    </div>
+    <div id="qv-list" class="questions qv-list"></div>
   </main>
 
   <main id="progress" class="progress" hidden>

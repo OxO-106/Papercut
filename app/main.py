@@ -15,9 +15,9 @@ from fastapi import Body, FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ask, explain, export, fetch, jobs, library, llm, translate
+from . import ask, cards, catalog, explain, export, fetch, jobs, library, llm, markdown, refs, translate
 from .config import LIBRARY, WEB_DIR
-from .highlight import CATEGORIES
+from .highlight import CATEGORIES, VERSION as HIGHLIGHTER_VERSION
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")  # installable-app manifest
 
@@ -265,6 +265,221 @@ def make_insights(paper_id: str):
     return {"status": jobs.status(jobs.insights_key(paper_id))}
 
 
+# ---- Summary, flashcards: side jobs like Questions (GET = stored result + job state).
+
+def _side_get(paper_id: str, kind: str):
+    _existing(paper_id)
+    paper = library.load_paper(paper_id) or {}
+    return {kind: paper.get(kind), "status": jobs.status(jobs.side_key(paper_id, kind))}
+
+
+def _side_post(paper_id: str, kind: str):
+    _existing(paper_id)
+    if not library.load_paper(paper_id):
+        raise HTTPException(409, "not processed yet")
+    jobs.submit(paper_id, kind=kind)
+    return {"status": jobs.status(jobs.side_key(paper_id, kind))}
+
+
+@app.get("/api/papers/{paper_id}/summary")
+def get_summary(paper_id: str):
+    return _side_get(paper_id, "summary")
+
+
+@app.post("/api/papers/{paper_id}/summary")
+def make_summary(paper_id: str):
+    """(Re)write the one-page summary in the background."""
+    return _side_post(paper_id, "summary")
+
+
+@app.get("/api/papers/{paper_id}/connections")
+def get_connections(paper_id: str):
+    """Library papers this one cites, is cited by, and is closest to in content."""
+    _existing(paper_id)
+    return catalog.connections(paper_id)
+
+
+@app.get("/api/papers/{paper_id}/cards")
+def get_cards(paper_id: str):
+    out = _side_get(paper_id, "cards")
+    deck = (out["cards"] or {}).get("cards", [])
+    review = cards.due([{"id": paper_id, "title": "", "cards": deck}])
+    review.pop("queue")
+    out["review"] = review
+    return out
+
+
+@app.post("/api/papers/{paper_id}/cards")
+def make_cards(paper_id: str):
+    """(Re)write the AI's flashcards in the background (your own cards stay)."""
+    return _side_post(paper_id, "cards")
+
+
+@app.post("/api/papers/{paper_id}/cards/new")
+def add_card(paper_id: str, body: dict = Body(...)):
+    """A card of your own: {front, back, sid?}."""
+    _existing(paper_id)
+    front, back = str(body.get("front", "")).strip(), str(body.get("back", "")).strip()
+    if not front or not back:
+        raise HTTPException(400, "a card needs a front and a back")
+    sid = str(body.get("sid") or "")
+    card = {"id": cards.card_id(front), "front": front[:500], "back": back[:2000], "kind": "concept",
+            "highlights": [sid] if sid else [], "by": "you", "created": time.time()}
+
+    def apply(p):
+        deck = p.setdefault("cards", {"cards": [], "at": time.time()})
+        if any(c["id"] == card["id"] for c in deck["cards"]):
+            raise HTTPException(409, "there is already a card with this front")
+        deck["cards"].append(card)
+
+    library.update_paper(paper_id, apply)
+    return card
+
+
+@app.put("/api/papers/{paper_id}/cards/{card_id}")
+def edit_card(paper_id: str, card_id: str, body: dict = Body(...)):
+    """Edit a card's back (its front is its identity, so review history stays)."""
+    _existing(paper_id)
+    found = {}
+
+    def apply(p):
+        for c in (p.get("cards") or {}).get("cards", []):
+            if c["id"] == card_id:
+                if str(body.get("back", "")).strip():
+                    c["back"] = str(body["back"]).strip()[:2000]
+                found.update(c)
+
+    library.update_paper(paper_id, apply)
+    if not found:
+        raise HTTPException(404, "card not found")
+    return found
+
+
+@app.delete("/api/papers/{paper_id}/cards/{card_id}")
+def delete_card(paper_id: str, card_id: str):
+    _existing(paper_id)
+
+    def apply(p):
+        deck = p.get("cards") or {}
+        deck["cards"] = [c for c in deck.get("cards", []) if c["id"] != card_id]
+
+    library.update_paper(paper_id, apply)
+    cards.forget(paper_id, card_id)
+    return {"ok": True}
+
+
+# ---- Review: flashcards due across the library (or one paper).
+
+def _decks(paper_id: str | None = None) -> list[dict]:
+    out = []
+    for pid in [paper_id] if paper_id else catalog.paper_ids():
+        p = library.load_paper(pid)
+        if p and (p.get("cards") or {}).get("cards"):
+            out.append({"id": pid, "title": p["meta"]["title"], "cards": p["cards"]["cards"]})
+    return out
+
+
+@app.get("/api/review")
+def review_queue(paper: str | None = None):
+    """Cards due now (and up to 20 new ones), oldest due first."""
+    if paper:
+        _existing(paper)
+    return cards.due(_decks(paper))
+
+
+@app.post("/api/review/{paper_id}/{card_id}")
+def review_card(paper_id: str, card_id: str, body: dict = Body(...)):
+    _existing(paper_id)
+    try:
+        return cards.grade(paper_id, card_id, str(body.get("grade", "")))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---- Markdown export
+
+@app.get("/api/papers/{paper_id}/markdown")
+def export_markdown(paper_id: str, parts: str = ",".join(markdown.PARTS), hidden: str = ""):
+    """The paper's reading as a Markdown file. parts: any of summary, highlights,
+    notes, questions, cards, chat; hidden: highlight categories to leave out."""
+    _existing(paper_id)
+    paper = library.load_paper(paper_id)
+    if not paper:
+        raise HTTPException(409, "not processed yet")
+    want = [x for x in parts.split(",") if x in markdown.PARTS] or list(markdown.PARTS)
+    text = markdown.render(paper, want, {h for h in hidden.split(",") if h})
+    name = markdown.filename(paper, " - questions" if want == ["questions"] else "")
+    return Response(text.encode("utf-8"), media_type="text/markdown; charset=utf-8", headers={
+        "Content-Disposition": f"attachment; filename=\"notes.md\"; filename*=UTF-8''{quote(name)}",
+        "Access-Control-Expose-Headers": "Content-Disposition",
+    })
+
+
+# ---- References: add a cited paper to the library
+
+@app.post("/api/papers/{paper_id}/references/{block_id}/add")
+def add_reference(paper_id: str, block_id: str):
+    """Find the paper a reference entry cites, download it and queue it.
+    Returns {"id", "title", "existing"}; the link is remembered on this paper."""
+    _existing(paper_id)
+    paper = library.load_paper(paper_id)
+    ref = next((b for b in (paper or {}).get("blocks", []) if b["id"] == block_id and b["type"] == "references"), None)
+    if not ref:
+        raise HTTPException(404, "reference not found")
+    linked = (paper.get("ref_links") or {}).get(block_id)
+    if linked and library.pdf_path(linked).exists():
+        e = library.load_paper(linked)
+        return {"id": linked, "title": e["meta"]["title"] if e else None, "existing": True}
+    try:
+        info, title = refs.resolve(ref["text"])
+        path = fetch.download(info["pdf_urls"])
+    except fetch.FetchError as e:
+        raise HTTPException(422, str(e))
+    try:
+        new_id = library.ingest(path, fetch.filename_for(info), info)
+    finally:
+        path.unlink(missing_ok=True)
+    existing = library.load_paper(new_id) is not None
+    jobs.submit(new_id)
+    library.update_paper(paper_id, lambda p: p.setdefault("ref_links", {}).update({block_id: new_id}))
+    known = library.load_paper(new_id)
+    return {"id": new_id, "title": known["meta"]["title"] if known else title, "existing": existing}
+
+
+# ---- The library
+
+@app.get("/api/library")
+def get_library():
+    """Every paper with its shelf data, plus the collections."""
+    cols = catalog.load_collections()
+    return {"papers": catalog.entries(), "collections": cols["collections"], "organized": cols.get("at"),
+            "organize": jobs.status(jobs.side_key(jobs.LIBRARY_ID, "organize"))}
+
+
+@app.put("/api/library/{paper_id}")
+def put_shelf(paper_id: str, body: dict = Body(...)):
+    """Set a paper's status (to-read/reading/done/null), tags or collection."""
+    _existing(paper_id)
+    try:
+        return catalog.update_shelf(paper_id, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/library/organize")
+def organize_library(body: dict = Body(default={})):
+    """Let the AI group the library into collections, in the background.
+    {"fresh": true} starts over instead of keeping the current collections."""
+    jobs.submit(jobs.LIBRARY_ID, kind="organize-fresh" if body.get("fresh") else "organize")
+    return {"status": jobs.status(jobs.side_key(jobs.LIBRARY_ID, "organize"))}
+
+
+@app.get("/api/search")
+def search_library(q: str = ""):
+    """Search across every paper: matching papers and passages."""
+    return catalog.search(q[:300])
+
+
 @app.delete("/api/papers/{paper_id}/chat")
 def clear_chat(paper_id: str):
     _existing(paper_id)
@@ -298,6 +513,7 @@ def get_paper(paper_id: str):
         jobs.submit(paper_id)  # e.g. the server restarted mid-processing
         raise HTTPException(409, "not processed yet")
     library.touch_recent(paper_id, paper["meta"]["title"])
+    paper["highlighter_version"] = HIGHLIGHTER_VERSION  # older highlights get an "Update" notice
     # Image sizes let the page reserve each figure's height before it loads,
     # so jumps and restored positions don't drift as images arrive.
     for b in paper["blocks"]:

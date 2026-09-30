@@ -15,8 +15,12 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 - **AI highlights:** the model reads the whole paper, takes notes, and highlights the sentences that matter. Colours show each sentence's role: objective, novelty, method, result, limitation or definition. Hover a highlight to see its margin note.
 - **Explain and Translate:** hover any sentence, or select any text, to get an explanation or a translation. Figures and tables have their own Explain button; the model reads the image.
 - **Ask:** chat about the paper, with answers grounded in its passages. It can optionally search arXiv/OpenAlex for related work and the web for background concepts.
-- **Questions:** Papercut generates insightful questions about the key highlights and tries to answer them from the paper or from outside sources.
-- **Library:** upload PDFs or arXiv links. Processing is queued, and the queue survives restarts.
+- **Summary:** a one-page cheat sheet of each paper (problem, approach, key results with numbers, contributions, limitations, open questions), each point linked to the sentences it rests on.
+- **Questions:** Papercut generates insightful questions about the key highlights and tries to answer them from the paper or from outside sources. They can open in their own window or be exported.
+- **Flashcards and review:** cards written from the summary and highlights (plus your own), reviewed with spaced repetition across your whole library.
+- **Library:** collections the AI proposes (and you can change), status, tags, and search across titles, topics and the full text of every paper. Each paper shows which library papers it cites, which cite it, and which are closest in content. A reference can be added to the library with one click.
+- **Export:** the original PDF with highlights and notes as annotations, or Markdown (summary, highlights, notes, questions, cards) for Obsidian, Notion and the like.
+- **Processing** of uploads and arXiv/DOI links is queued, and the queue survives restarts.
 - **Installable app (PWA)** with a Windows tray icon that shows whether the server is running and restarts it if it stops.
 
 ## Requirements
@@ -106,6 +110,22 @@ To move the library, set `PAPER_READER_LIBRARY`, for example to a cloud-synced f
 
 This re-parses every PDF in the folder and prints per-paper stats. `lowcov` counts sentences that could not be located on the PDF page; these would be missing from exported highlights. Add `?debug` to the reader URL to underline them.
 
+## Tests
+
+```
+.venv\Scripts\pip install pytest
+.venv\Scripts\python -m pytest tests
+```
+
+`tests/test_units.py` covers pure logic (scheduling, Markdown, reference matching, citations). `tests/test_library_regression.py` checks parsing fixes against the papers in your own library (papers aren't in the repository; missing ones are skipped), so reprocess after changing the parser.
+
+To try changes without disturbing a running Papercut, start a second copy on another port with its background worker off (`PAPERCUT_WORKER=0`), so it never processes or resumes jobs:
+
+```
+set PAPERCUT_WORKER=0
+.venv\Scripts\python -m uvicorn app.main:app --port 8011
+```
+
 ## Project layout
 
 ```
@@ -113,6 +133,7 @@ app/       FastAPI server: parsing (Docling + PyMuPDF), highlighting, explain,
            translate, ask, questions, research tools, job queue
 web/       Front end (vanilla JS/CSS), fonts, icons, PWA manifest
 scripts/   Maintenance scripts
+tests/     Unit tests and parse regressions against your library
 docs/      Design document
 *.ps1      Windows launcher, tray icon and helpers
 ```

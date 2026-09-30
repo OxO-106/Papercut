@@ -120,6 +120,23 @@ def carry_over(old: dict, new: dict) -> None:
             q["highlights"] = [x for x in (by_text.get(old["sentences"].get(h, {}).get("text")) for h in q.get("highlights", [])) if x]
             for src in q.get("sources", []):
                 src["sid"] = by_text.get(old["sentences"].get(src.get("sid"), {}).get("text"))
+    # Summary and flashcards point at highlights too.
+    move = lambda sids: [x for x in (by_text.get(old["sentences"].get(h, {}).get("text")) for h in sids or []) if x]
+    if old.get("summary"):
+        new["summary"] = old["summary"]
+        for key in ("results", "contributions", "limitations"):
+            for it in new["summary"].get(key, []):
+                it["highlights"] = move(it.get("highlights"))
+    if old.get("cards"):
+        new["cards"] = old["cards"]
+        for c in new["cards"].get("cards", []):
+            c["highlights"] = move(c.get("highlights"))
+    # Cited papers added to the library: keyed by reference block, matched by entry text.
+    if old.get("ref_links"):
+        old_refs = {b["id"]: b.get("text") for b in old["blocks"] if b["type"] == "references"}
+        new_refs = {b.get("text"): b["id"] for b in new["blocks"] if b["type"] == "references"}
+        new["ref_links"] = {new_refs[old_refs[bid]]: pid for bid, pid in old["ref_links"].items()
+                            if old_refs.get(bid) in new_refs}
     if old.get("status", {}).get("classified"):
         new["status"].update(classified=True, model=old["status"].get("model"),
                              highlight_version=old["status"].get("highlight_version", 1))
