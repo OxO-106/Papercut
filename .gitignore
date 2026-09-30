@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime files
+*.log
+.stop-requested
+
+# Secrets (kept outside the repo, but just in case)
+*api-key*.txt

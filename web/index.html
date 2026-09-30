@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Papercut</title>
+  <!-- Icons: SVG for tabs (sharp at any scale); PNG sizes because Edge draws an
+       app window's title-bar and taskbar icon from a bitmap, not the SVG.
+       The server versions every local file URL by content, so updates are never stale. -->
+  <link rel="icon" type="image/svg+xml" href="icons/favicon.svg" sizes="any">
+  <link rel="icon" type="image/png" href="icons/favicon-32.png" sizes="32x32">
+  <link rel="icon" type="image/png" href="icons/icon-192.png" sizes="192x192">
+  <link rel="icon" href="icons/favicon.ico" sizes="16x16 24x24 32x32 48x48 64x64">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#f3f1ec">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="#/"><img src="icons/favicon.svg" alt="" width="24" height="24">Papercut</a>
+    <div class="bar-actions">
+      <span id="paper-actions" class="bar-actions" hidden>
+        <button id="outline-toggle" type="button" aria-expanded="false" aria-controls="outline" title="Show or hide the outline">Outline</button>
+        <button id="ask-toggle" type="button" aria-expanded="false" aria-controls="chat">Ask</button>
+        <button id="questions-toggle" type="button" aria-expanded="false" aria-controls="qpanel" title="Insightful questions about the key highlights, with answers">Questions</button>
+        <button id="toggle-original" type="button">Original PDF</button>
+        <button id="export" type="button" title="Download the original PDF with these highlights">Export PDF</button>
+        <button id="reprocess" type="button" title="Parse this paper again">Reprocess</button>
+      </span>
+      <button id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings" title="Reading settings">Aa</button>
+    </div>
+  </header>
+
+  <aside id="settings" class="settings" hidden>
+    <label>Font
+      <select id="set-font">
+        <option value="libertine">Linux Libertine</option>
+        <option value="opensans">Open Sans</option>
+        <option value="roboto">Roboto</option>
+      </select>
+    </label>
+    <label>Font size <output id="out-size"></output>
+      <input id="set-size" type="range" min="14" max="30" step="1">
+    </label>
+    <label>Line height <output id="out-leading"></output>
+      <input id="set-leading" type="range" min="1.2" max="2.2" step="0.05">
+    </label>
+    <label>Column width <output id="out-width"></output>
+      <input id="set-width" type="range" min="480" max="1600" step="20">
+    </label>
+    <fieldset>
+      <legend>Theme</legend>
+      <div class="seg" id="set-theme">
+        <button type="button" data-v="auto">Auto</button>
+        <button type="button" data-v="light">Light</button>
+        <button type="button" data-v="sepia">Sepia</button>
+        <button type="button" data-v="dark">Dark</button>
+      </div>
+    </fieldset>
+    <label>Translate to
+      <select id="set-lang"></select>
+    </label>
+    <fieldset class="hl-settings">
+      <legend>Highlights</legend>
+      <div id="set-cats" class="cats"></div>
+      <p id="ai-status" class="ai-status"></p>
+      <button id="rehighlight" type="button">Re-run AI highlights</button>
+    </fieldset>
+    <button id="set-reset" type="button" class="link">Reset to defaults</button>
+  </aside>
+
+  <nav id="outline" class="outline" hidden aria-label="Outline">
+    <div class="outline-head">
+      <div class="outline-tabs" role="tablist">
+        <button id="tab-sections" type="button" role="tab" aria-controls="outline-list">Sections</button>
+        <button id="tab-floats" type="button" role="tab" aria-controls="outline-floats">Figures &amp; tables</button>
+      </div>
+      <button id="outline-close" type="button" aria-label="Hide outline">×</button>
+    </div>
+    <div class="outline-track"><div id="outline-progress" class="outline-progress"></div></div>
+    <div id="outline-list" class="outline-list"></div>
+    <p id="outline-empty" class="outline-empty" hidden>No section headings found.</p>
+    <div id="outline-floats" class="outline-list floats-list" hidden></div>
+  </nav>
+
+  <aside id="qpanel" class="chat" hidden aria-label="Questions about this paper">
+    <div class="chat-head">
+      <strong>Questions about this paper</strong>
+      <span><button id="qpanel-close" type="button" class="panel-close" aria-label="Close">×</button></span>
+    </div>
+    <div id="questions" class="chat-log questions"></div>
+  </aside>
+
+  <aside id="chat" class="chat" hidden aria-label="Ask about this paper">
+    <div class="chat-head">
+      <strong>Ask about this paper</strong>
+      <span>
+        <button id="chat-clear" type="button" class="link">Clear</button>
+        <button id="chat-close" type="button" aria-label="Close">×</button>
+      </span>
+    </div>
+    <div id="chat-log" class="chat-log" aria-live="polite"></div>
+    <form id="chat-form" class="chat-form">
+      <textarea id="chat-input" rows="2" placeholder="Ask a question about the paper…" aria-label="Your question"></textarea>
+      <button id="chat-search" type="button" aria-pressed="false" title="Search papers and the web before answering">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 12h18M12 3c2.6 2.6 3.9 5.6 3.9 9s-1.3 6.4-3.9 9c-2.6-2.6-3.9-5.6-3.9-9S9.4 5.6 12 3z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        <span>Search</span>
+      </button>
+      <button id="chat-send" type="submit" aria-label="Send (Enter)" title="Send (Enter)">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 5v7a3 3 0 0 1-3 3H6m0 0 4-4m-4 4 4 4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </form>
+  </aside>
+
+  <div id="picker" class="picker" hidden role="menu" aria-label="Highlight this sentence"></div>
+
+  <main id="home" class="home" hidden>
+    <label id="drop" class="drop">
+      <input id="file" type="file" accept="application/pdf" hidden>
+      <strong>Drop a PDF here</strong>
+      <span>or click to choose a file</span>
+    </label>
+    <form id="link-form" class="link-form">
+      <input id="link-input" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+             placeholder="…or paste an arXiv link or ID, a DOI, or a PDF link" aria-label="Paper link">
+      <button type="submit">Open</button>
+    </form>
+    <p id="link-error" class="error" hidden></p>
+    <section>
+      <h2>Recent</h2>
+      <ul id="recent" class="recent"></ul>
+    </section>
+  </main>
+
+  <main id="progress" class="progress" hidden>
+    <p id="progress-stage">Waiting in queue</p>
+    <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+    <p id="progress-error" class="error" hidden></p>
+  </main>
+
+  <main id="reader" hidden>
+    <div id="notice" class="notice" hidden></div>
+    <article id="paper" class="paper"></article>
+    <iframe id="original" class="original" title="Original PDF" hidden></iframe>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
