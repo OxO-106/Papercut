@@ -167,3 +167,22 @@ def test_near_identical_titles_need_the_same_author():
                             "Junjie Wang", "Wang")
     assert not refs._same_title("Software Testing with Large Language Models", "Software testing with large language model",
                                 "Someone Else", "Wang")
+
+
+def test_automatic_organize_only_files_new_papers(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "COLLECTIONS_FILE", tmp_path / "collections.json")
+    (tmp_path / "collections.json").write_text(json.dumps(
+        {"collections": [{"name": "Agents", "about": ""}], "assign": {"old": "Agents"}}))
+    entries = {"old": {"id": "old", "title": "Old", "tldr": "", "topics": []},
+               "new": {"id": "new", "title": "New", "tldr": "", "topics": []}}
+    monkeypatch.setattr(catalog, "paper_ids", lambda: list(entries))
+    monkeypatch.setattr(catalog, "_entry", entries.get)
+    # The model tries to move the old paper and puts the new one in a new collection.
+    reply = {"collections": [{"name": "Agents", "about": ""}, {"name": "Vision", "about": ""}],
+             "assign": [{"id": 1, "collection": "Vision"}, {"id": 2, "collection": "Vision"}]}
+    monkeypatch.setattr(catalog.llm, "chat", lambda *a, **k: json.dumps(reply))
+    monkeypatch.setattr(catalog.llm, "model_name", lambda: "test")
+    r = catalog.organize()
+    assert r["assign"] == {"old": "Agents", "new": "Vision"}
+    assert [c["name"] for c in r["collections"]] == ["Agents", "Vision"]
+    assert catalog.organize(fresh=True)["assign"] == {"old": "Vision", "new": "Vision"}

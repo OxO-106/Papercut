@@ -190,8 +190,11 @@ ORGANIZE_SCHEMA = {
 
 
 def organize(fresh: bool = False, progress=lambda s, f: None) -> dict:
-    """Let the model group the library into collections. By default the
-    existing collections are kept and only extended; fresh=True starts over."""
+    """Let the model group the library into collections. By default (the
+    automatic run after a new paper's summary) the existing collections and
+    every paper already in one stay as they are: only papers without a
+    collection are filed, into an existing collection or a new one if none
+    fits. fresh=True starts over and regroups everything."""
     papers = [e for e in (_entry(pid) for pid in paper_ids()) if e]
     if not papers:
         raise ValueError("The library is empty.")
@@ -208,18 +211,24 @@ def organize(fresh: bool = False, progress=lambda s, f: None) -> dict:
         data = json.loads(raw)
     except json.JSONDecodeError:
         data = json.loads(llm.chat(messages, schema=ORGANIZE_SCHEMA, temperature=0.2, max_tokens=3000))
+    keep_old = not fresh and bool(old["collections"])
     cols, seen = [], set()
+    if keep_old:
+        for c in old["collections"]:
+            seen.add(c["name"].lower())
+            cols.append(c)
     for c in data.get("collections", []):
         name = re.sub(r"\s+", " ", str(c.get("name", ""))).strip()[:60]
         if name and name.lower() not in seen:
             seen.add(name.lower())
             cols.append({"name": name, "about": str(c.get("about", "")).strip()[:200]})
     by_lower = {c["name"].lower(): c["name"] for c in cols}
-    assign = {}
+    ids = {e["id"] for e in papers}
+    assign = {pid: c for pid, c in old["assign"].items() if pid in ids} if keep_old else {}
     for a in data.get("assign", []):
         i, name = a.get("id"), str(a.get("collection", "")).strip().lower()
         if isinstance(i, int) and 1 <= i <= len(papers) and name in by_lower:
-            assign[papers[i - 1]["id"]] = by_lower[name]
+            assign.setdefault(papers[i - 1]["id"], by_lower[name])  # papers already filed stay put
     used = set(assign.values())
     result = {"collections": [c for c in cols if c["name"] in used], "assign": assign, "at": time.time(),
               "model": llm.model_name()}
