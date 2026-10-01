@@ -226,7 +226,7 @@ The home page accepts an arXiv ID or URL (`2303.11366`, `arXiv:2303.11366v4`, `a
 Single column in the chosen typography. Figures, tables and equations are image crops placed in reading order. Text is left-aligned with automatic hyphenation. A toolbar toggles the original PDF view.
 
 ### 6.3 Controls (global)
-Font family (Linux Libertine, Open Sans, Roboto — bundled from the owner's font set), font size (14–30px), line height, column width (480–1600px, default 860px), theme (auto / light / sepia / dark), per-category visibility. Settings are stored in the library's `settings.json`, so they follow the library to other machines.
+Font family (Linux Libertine, Open Sans, Roboto — bundled from the owner's font set), font size (14–30px), line height, column width (480–1600px, default 860px), theme (auto / light / sepia / dark), per-category visibility. Settings are stored in the library's `settings.json`, so they follow the library to other machines. The interface (bars, panels, menus) is set in IBM Plex Sans, bundled as a WOFF2 subset so every device looks the same.
 
 ### 6.4 Editing highlights
 Click a sentence to open a small category picker: six categories, "No highlight", and (for edited sentences) "Reset to AI's choice". The change is saved immediately.
