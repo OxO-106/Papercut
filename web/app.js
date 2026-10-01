@@ -135,7 +135,6 @@ async function showHome() {
   document.title = "Papercut";
   current = null;
   await loadLibrary();
-  refreshReviewCount();
 }
 
 async function upload(file) {
@@ -2291,18 +2290,17 @@ function renderCards(data, st) {
   box.replaceChildren();
   const running = jobProgress(box, st, "Written from the summary, highlights and answered questions; about a minute.");
   const deck = data?.cards?.cards || [];
-  const rv = data?.review;
+  const info = data?.review;
   if (deck.length) {
     const head = el("div", "fc-head");
-    const due = rv ? rv.due + Math.min(rv.new, 20) : 0;
-    head.append(el("span", null, `${deck.length} cards` + (rv ? ` · ${rv.due} due · ${rv.new} new` : "")));
-    const go = el("a", "btn primary", due ? `Review ${due}` : "Review");
+    head.append(el("span", null, `${deck.length} cards` + (info?.reviewed ? ` · last reviewed ${ago(info.last)}` : "")));
+    const go = el("a", "btn primary", "Review");
     go.href = `#/review/${current.id}`;
     head.append(go);
     box.append(head);
   } else if (!running) {
     const intro = el("div", "q-intro");
-    intro.append(el("p", null, "Flashcards for what's worth remembering in this paper: the core idea, key design decisions, results with their numbers, definitions and limitations. Review them under Review at the top: each comes back just before you would forget it."));
+    intro.append(el("p", null, "Flashcards for what's worth remembering in this paper: the core idea, key design decisions, results with their numbers, definitions and limitations. Go through them whenever you like, from here or from Review at the top; the ones you find hard come first."));
     const go = el("button", "q-go", "Make flashcards");
     go.type = "button";
     go.addEventListener("click", startCards);
@@ -2372,42 +2370,79 @@ function flashcard(c) {
 }
 
 // ---------- Review ----------
-// Spaced repetition across the library (or one paper): due cards first, then
-// new ones (at most 20 a day). Space shows the answer; 1-4 grade it.
+// On demand, one paper at a time: nothing is scheduled or pushed. #/review
+// lists the papers that have flashcards; #/review/<id> goes through all of a
+// paper's cards, weakest first (the grades decide that order). Space shows
+// the answer; 1-4 grade it.
 const GRADES = [["again", "Again"], ["hard", "Hard"], ["good", "Good"], ["easy", "Easy"]];
 let rv = null;
 
-function fmtInterval(sec) {
-  if (sec < 3600) return `${Math.max(1, Math.round(sec / 60))} min`;
-  if (sec < 86400) return `${Math.round(sec / 3600)} h`;
-  const d = sec / 86400;
-  if (d < 30) return `${Math.round(d)} d`;
-  if (d < 365) return `${Math.round(d / 30)} mo`;
-  return `${(d / 365).toFixed(1)} y`;
-}
-
-async function refreshReviewCount() {
-  try {
-    const r = await api("/api/review");
-    const n = r.queue.length;
-    $("review-count").textContent = String(n);
-    $("review-count").hidden = !n;
-  } catch {}
+function ago(t) {
+  if (!t) return "";
+  const d = (Date.now() / 1000 - t) / 86400;
+  if (d < 1) return "today";
+  if (d < 2) return "yesterday";
+  if (d < 30) return `${Math.round(d)} days ago`;
+  return new Date(t * 1000).toLocaleDateString(undefined, { dateStyle: "medium" });
 }
 
 async function showReview(pid) {
   show("review");
   document.title = "Review · Papercut";
-  $("rv-stage").replaceChildren(el("p", "pending", "Loading cards…"));
-  let data;
+  rv = null;
+  $("rv-count").textContent = "";
+  $("rv-stage").replaceChildren(el("p", "pending", "Loading…"));
+  if (pid) return startReview(pid);
+  $("rv-title").textContent = "Review";
+  let decks, libData;
   try {
-    data = await api(`/api/review${pid ? `?paper=${pid}` : ""}`);
+    [decks, libData] = await Promise.all([api("/api/review"), api("/api/library").catch(() => null)]);
   } catch (e) {
     $("rv-stage").replaceChildren(el("p", "error", String(e.message || e)));
     return;
   }
-  rv = { paper: pid, queue: data.queue, i: 0, shown: false, reviewed: 0, data };
-  $("rv-title").textContent = pid ? "Review this paper" : "Review";
+  const stage = $("rv-stage");
+  stage.replaceChildren(el("p", "rv-intro", "Pick a paper to go through its flashcards. Cards you found hard come first."));
+  const list = el("div", "rv-decks");
+  for (const d of decks) {
+    const a = el("a", "rv-deck");
+    a.href = `#/review/${d.id}`;
+    a.append(el("span", "rv-deck-title", d.title));
+    const info = `${d.cards} cards` + (d.reviewed ? ` · ${d.reviewed} reviewed · last ${ago(d.last)}` : " · not reviewed yet");
+    a.append(el("span", "rv-deck-info", info));
+    list.append(a);
+  }
+  if (!decks.length) list.append(el("p", "lib-empty", "No paper has flashcards yet."));
+  stage.append(list);
+  // Papers without cards: make them here.
+  const missing = (libData?.papers || []).filter((p) => !p.processing && !p.cards && p.classified);
+  if (missing.length) {
+    const sec = el("div", "rv-missing");
+    sec.append(el("p", null, `${missing.length} paper${missing.length > 1 ? "s have" : " has"} no flashcards yet:`));
+    const ul = el("ul");
+    for (const p of missing) ul.append(el("li", null, p.title));
+    const all = el("button", "primary", missing.length > 1 ? `Make cards for all ${missing.length}` : "Make cards");
+    all.type = "button";
+    all.addEventListener("click", async () => {
+      all.disabled = true;
+      for (const p of missing) await api(`/api/papers/${p.id}/cards`, { method: "POST" }).catch(() => {});
+      all.textContent = "Queued: each paper takes a minute or two.";
+    });
+    sec.append(ul, all);
+    stage.append(sec);
+  }
+}
+
+async function startReview(pid) {
+  let data;
+  try {
+    data = await api(`/api/review/${pid}`);
+  } catch (e) {
+    $("rv-stage").replaceChildren(el("p", "error", String(e.message || e)));
+    return;
+  }
+  rv = { paper: pid, title: data.queue[0]?.title || "", queue: data.queue, i: 0, shown: false, reviewed: 0 };
+  $("rv-title").textContent = "Review";
   renderReview();
 }
 
@@ -2416,13 +2451,33 @@ function renderReview() {
   stage.replaceChildren();
   const card = rv.queue[rv.i];
   $("rv-count").textContent = card ? `${rv.queue.length - rv.i} to go` : "";
-  if (!card) { reviewDone(stage); return; }
+  const top = el("div", "rv-paperbar");
+  const t = el("a", "rv-paper", rv.title);
+  t.href = `#/paper/${rv.paper}`;
+  const back = el("a", "rv-back-link", "All papers");
+  back.href = "#/review";
+  top.append(t, back);
+  stage.append(top);
+  if (!card) {
+    const box = el("div", "rv-done");
+    box.append(el("h3", null, rv.reviewed ? "Done with this paper." : "This paper has no flashcards yet."));
+    if (rv.reviewed) box.append(el("p", null, `You went through ${rv.reviewed} card${rv.reviewed > 1 ? "s" : ""}.`));
+    const again = el("button", null, "Go through it again");
+    again.type = "button";
+    again.addEventListener("click", () => startReview(rv.paper));
+    const list = el("a", "btn primary", "Pick another paper");
+    list.href = "#/review";
+    const row = el("div", "rv-actions");
+    if (rv.reviewed) row.append(again);
+    row.append(list);
+    box.append(row);
+    stage.append(box);
+    return;
+  }
   const box = el("article", "rv-card");
-  const top = el("div", "rv-top");
-  const t = el("a", "rv-paper", card.title);
-  t.href = `#/paper/${card.paper}`;
-  top.append(t, el("span", "q-kind", card.kind + (card.state ? "" : " · new")));
-  box.append(top, el("p", "rv-front", card.front));
+  const head = el("div", "rv-top");
+  head.append(el("span", "q-kind", card.kind + (card.state ? "" : " · new")));
+  box.append(head, el("p", "rv-front", card.front));
   const actions = el("div", "rv-actions");
   if (!rv.shown) {
     const showBtn = el("button", "primary rv-show", "Show answer");
@@ -2431,20 +2486,20 @@ function renderReview() {
     showBtn.addEventListener("click", () => { rv.shown = true; renderReview(); });
     actions.append(showBtn);
   } else {
-    const back = el("div", "rv-back");
-    back.append(el("p", null, card.back));
-    for (const sid of card.highlights || []) {
+    const ans = el("div", "rv-back");
+    ans.append(el("p", null, card.back));
+    const sid = (card.highlights || [])[0];
+    if (sid) {
       const a = el("a", "rv-source", "See it in the paper");
       a.href = `#/paper/${card.paper}/s/${sid}`;
-      back.append(a);
-      break;
+      ans.append(a);
     }
-    box.append(back);
+    box.append(ans);
     GRADES.forEach(([g, label], i) => {
       const b = el("button", `rv-grade rv-${g}`);
       b.type = "button";
       b.title = `${label} (${i + 1})`;
-      b.append(el("strong", null, label), el("span", null, fmtInterval(card.next[g])));
+      b.append(el("strong", null, label));
       b.addEventListener("click", () => gradeCard(g));
       actions.append(b);
     });
@@ -2461,51 +2516,18 @@ async function gradeCard(g) {
     });
   } catch (err) { alert(`Could not save: ${err.message || err}`); return; }
   rv.reviewed++;
-  if (g === "again") { // back at the end of this session
-    const now = Date.now() / 1000;
-    rv.queue.push({ ...card, state, next: { again: 60, hard: 86400, good: 86400, easy: 4 * 86400 }, _at: now });
-  }
+  if (g === "again") rv.queue.push({ ...card, state }); // once more before this paper is done
   rv.i++;
   rv.shown = false;
   renderReview();
-  refreshReviewCount();
 }
 
 document.addEventListener("keydown", (e) => {
   if ($("review").hidden || !rv || e.target.closest("input, textarea, select")) return;
-  const card = rv.queue[rv.i];
-  if (!card) return;
+  if (!rv.queue[rv.i]) return;
   if (!rv.shown && (e.key === " " || e.key === "Enter")) { e.preventDefault(); rv.shown = true; renderReview(); }
   else if (rv.shown && /^[1-4]$/.test(e.key)) gradeCard(GRADES[Number(e.key) - 1][0]);
 });
-
-async function reviewDone(stage) {
-  const box = el("div", "rv-done");
-  box.append(el("h3", null, rv.reviewed ? "All caught up." : "Nothing to review right now."));
-  const d = rv.data;
-  if (rv.reviewed) box.append(el("p", null, `You reviewed ${rv.reviewed} card${rv.reviewed > 1 ? "s" : ""}.`));
-  if (d.next_due) box.append(el("p", null, `The next card is due in ${fmtInterval(d.next_due - Date.now() / 1000)}.`));
-  if (!d.total) box.append(el("p", null, rv.paper ? "This paper has no flashcards yet." : "No paper has flashcards yet."));
-  stage.append(box);
-  // Papers without cards: make them here.
-  let lib2;
-  try { lib2 = await api("/api/library"); } catch { return; }
-  const missing = lib2.papers.filter((p) => !p.processing && !p.cards && p.classified && (!rv.paper || p.id === rv.paper));
-  if (!missing.length) return;
-  const sec = el("div", "rv-missing");
-  sec.append(el("p", null, `${missing.length} paper${missing.length > 1 ? "s have" : " has"} no flashcards yet:`));
-  const ul = el("ul");
-  for (const p of missing) ul.append(el("li", null, p.title));
-  const all = el("button", "primary", missing.length > 1 ? `Make cards for all ${missing.length}` : "Make cards");
-  all.type = "button";
-  all.addEventListener("click", async () => {
-    all.disabled = true;
-    for (const p of missing) await api(`/api/papers/${p.id}/cards`, { method: "POST" }).catch(() => {});
-    all.textContent = "Queued: the cards appear here as each paper is done (a minute or two each).";
-  });
-  sec.append(ul, all);
-  box.append(sec);
-}
 
 // ---------- Library ----------
 // Every paper, grouped into collections (the AI proposes them; you can move a

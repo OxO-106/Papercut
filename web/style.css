@@ -705,3 +705,14 @@ a.ref-act { color: var(--accent); }
   .bar button { padding: .3rem .55rem; font-size: .85rem; }
   .menu { position: fixed; top: 48px; right: 8px; }
 }
+/* Review: pick a paper */
+.rv-intro { color: var(--muted); margin: 0 0 1rem; }
+.rv-decks { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
+.rv-deck { display: flex; flex-direction: column; gap: .2rem; padding: .8rem .3rem; border-bottom: 1px solid var(--rule); color: var(--fg); text-decoration: none; }
+.rv-deck:hover { background: var(--bar-bg); }
+.rv-deck-title { font-weight: 600; line-height: 1.35; }
+.rv-deck-info { font-size: .8rem; color: var(--muted); }
+.rv-paperbar { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: .8rem; }
+.rv-paperbar .rv-paper { font-size: .9rem; font-weight: 600; color: var(--fg); }
+.rv-back-link { flex: none; font-size: .82rem; color: var(--accent); }
+.rv-done .rv-actions { margin-top: 1rem; }

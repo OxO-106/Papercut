@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 import re
 import shutil
 import tempfile
@@ -303,9 +304,7 @@ def get_connections(paper_id: str):
 def get_cards(paper_id: str):
     out = _side_get(paper_id, "cards")
     deck = (out["cards"] or {}).get("cards", [])
-    review = cards.due([{"id": paper_id, "title": "", "cards": deck}])
-    review.pop("queue")
-    out["review"] = review
+    out["review"] = cards.deck_info(paper_id, deck)
     return out
 
 
@@ -368,11 +367,11 @@ def delete_card(paper_id: str, card_id: str):
     return {"ok": True}
 
 
-# ---- Review: flashcards due across the library (or one paper).
+# ---- Review: on demand, one paper at a time.
 
-def _decks(paper_id: str | None = None) -> list[dict]:
+def _decks() -> list[dict]:
     out = []
-    for pid in [paper_id] if paper_id else catalog.paper_ids():
+    for pid in catalog.paper_ids():
         p = library.load_paper(pid)
         if p and (p.get("cards") or {}).get("cards"):
             out.append({"id": pid, "title": p["meta"]["title"], "cards": p["cards"]["cards"]})
@@ -380,11 +379,17 @@ def _decks(paper_id: str | None = None) -> list[dict]:
 
 
 @app.get("/api/review")
-def review_queue(paper: str | None = None):
-    """Cards due now (and new ones, at most 20 a day), oldest due first."""
-    if paper:
-        _existing(paper)
-    return cards.due(_decks(paper))
+def review_decks():
+    """The papers that have flashcards, with how many and when last reviewed."""
+    return [{"id": d["id"], "title": d["title"], **cards.deck_info(d["id"], d["cards"])} for d in _decks()]
+
+
+@app.get("/api/review/{paper_id}")
+def review_session(paper_id: str):
+    """All of a paper's cards, weakest first."""
+    _existing(paper_id)
+    p = library.load_paper(paper_id) or {}
+    return cards.session(paper_id, p.get("meta", {}).get("title", ""), (p.get("cards") or {}).get("cards", []))
 
 
 @app.post("/api/review/{paper_id}/{card_id}")
@@ -568,7 +573,8 @@ def put_position(paper_id: str, body: dict = Body(...)):
         }
     except (TypeError, ValueError):
         raise HTTPException(400, "bad position")
-    if pos["updated"] >= library.load_position(paper_id).get("updated", 0):
+    # A test copy (PAPERCUT_WORKER=0) never moves the reader's real position.
+    if os.environ.get("PAPERCUT_WORKER", "1") != "0" and pos["updated"] >= library.load_position(paper_id).get("updated", 0):
         library.save_position(paper_id, pos)
     return pos
 

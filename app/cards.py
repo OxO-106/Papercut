@@ -6,15 +6,15 @@ Questions. Each card is a question on the front and a short answer on the
 back, tied to the highlights it tests, so review can jump back to the paper.
 The reader can also add, edit and delete cards.
 
-Review uses a small SM-2 scheduler (the Anki family): each card has an ease,
-an interval in days and a due time; grading it Again / Hard / Good / Easy sets
-the next interval. Review state lives in the library's reviews.json, keyed
-"<paper id>:<card id>", so cards from every paper can be reviewed together.
+Review is on demand, one paper at a time: nothing is scheduled or pushed.
+Grades still matter: a small SM-2 scheduler (the Anki family) keeps an ease
+and an interval per card, and a review session puts the weakest cards first
+(those whose interval has run out, then new ones, then the rest). Review
+state lives in the library's reviews.json, keyed "<paper id>:<card id>".
 """
 
 import hashlib
 import json
-import math
 import os
 import threading
 import time
@@ -139,12 +139,6 @@ def schedule(state: dict | None, grade: str, now: float | None = None) -> dict:
     return s
 
 
-def preview(state: dict | None) -> dict[str, float]:
-    """Seconds until the card would be due again, for each grade (button labels)."""
-    now = time.time()
-    return {g: schedule(state, g, now)["due"] - now for g in GRADES}
-
-
 def grade(paper_id: str, cid: str, g: str) -> dict:
     if g not in GRADES:
         raise ValueError("bad grade")
@@ -165,29 +159,26 @@ def forget(paper_id: str, cid: str | None = None) -> None:
         _save_reviews(r)
 
 
-NEW_PER_DAY = 20
-
-
-def due(papers: list[dict], limit: int = 200) -> dict:
-    """Cards due now across the given papers (each {"id", "title", "cards"}):
-    cards seen before whose due time has passed, then new cards (at most 20
-    new a day, so a fresh library isn't a wall). Returns the queue and counts."""
+def session(paper_id: str, title: str, deck: list[dict]) -> dict:
+    """Every card of one paper, for a review whenever the reader wants one
+    (nothing is scheduled or pushed). Weakest first: cards whose interval has
+    run out (most overdue first), then cards never reviewed, then the rest
+    (the soonest due first)."""
     now = time.time()
     r = load_reviews()
-    midnight = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
-    started_today = sum(1 for st in r.values() if st.get("first", 0) >= midnight)
-    old, new, total, next_due = [], [], 0, None
-    for p in papers:
-        for c in p["cards"]:
-            total += 1
-            st = r.get(f"{p['id']}:{c['id']}")
-            item = {**c, "paper": p["id"], "title": p["title"], "state": st, "next": preview(st)}
-            if st is None:
-                new.append(item)
-            elif st["due"] <= now:
-                old.append(item)
-            else:
-                next_due = min(next_due or math.inf, st["due"])
-    old.sort(key=lambda c: c["state"]["due"])
-    queue = (old + new[:max(0, NEW_PER_DAY - started_today)])[:limit]
-    return {"queue": queue, "due": len(old), "new": len(new), "total": total, "next_due": next_due}
+    lapsed, new, later = [], [], []
+    for c in deck:
+        st = r.get(f"{paper_id}:{c['id']}")
+        item = {**c, "paper": paper_id, "title": title, "state": st}
+        (new if st is None else lapsed if st["due"] <= now else later).append(item)
+    lapsed.sort(key=lambda c: c["state"]["due"])
+    later.sort(key=lambda c: c["state"]["due"])
+    return {"queue": lapsed + new + later, "total": len(deck)}
+
+
+def deck_info(paper_id: str, deck: list[dict]) -> dict:
+    """For the list of decks: how many cards, how many reviewed, and when."""
+    r = load_reviews()
+    states = [r[k] for k in (f"{paper_id}:{c['id']}" for c in deck) if k in r]
+    return {"cards": len(deck), "reviewed": len(states),
+            "last": max((st.get("last", 0) for st in states), default=None) or None}

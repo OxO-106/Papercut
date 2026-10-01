@@ -39,17 +39,16 @@ def test_ease_has_a_floor():
     assert s["ease"] == 1.3
 
 
-def test_due_queue_orders_due_then_new(monkeypatch):
+def test_session_has_every_card_weakest_first(monkeypatch):
     now = 10 * DAY
-    reviews = {"p:a": {"due": now - 5, "interval": 1, "ease": 2.5, "reps": 1, "lapses": 0},
-               "p:b": {"due": now + DAY, "interval": 1, "ease": 2.5, "reps": 1, "lapses": 0}}
+    reviews = {"p:a": {"due": now - 5, "interval": 1, "ease": 2.5, "reps": 1, "lapses": 0, "last": now - DAY},
+               "p:b": {"due": now + DAY, "interval": 1, "ease": 2.5, "reps": 1, "lapses": 0, "last": now - 2 * DAY}}
     monkeypatch.setattr(cards, "load_reviews", lambda: reviews)
     monkeypatch.setattr(cards.time, "time", lambda: now)
-    deck = [{"id": x, "front": x, "back": x} for x in "abc"]
-    d = cards.due([{"id": "p", "title": "T", "cards": deck}])
-    assert [c["id"] for c in d["queue"]] == ["a", "c"]  # b isn't due; c is new
-    assert (d["due"], d["new"], d["total"]) == (1, 1, 3)
-    assert d["next_due"] == now + DAY
+    deck = [{"id": x, "front": x, "back": x} for x in "bca"]
+    s = cards.session("p", "T", deck)
+    assert [c["id"] for c in s["queue"]] == ["a", "c", "b"]  # run out, never seen, the rest
+    assert cards.deck_info("p", deck) == {"cards": 3, "reviewed": 2, "last": now - DAY}
 
 
 def test_card_id_ignores_case_and_spaces():
@@ -150,16 +149,6 @@ def test_shelf_validation(tmp_path, monkeypatch):
         catalog.update_shelf("p1", {"status": "someday"})
     assert catalog.update_shelf("p1", {"status": None, "tags": []}) == {}
     assert catalog.load_shelf() == {}
-
-
-def test_new_cards_are_limited_per_day(monkeypatch):
-    now = 100 * DAY
-    monkeypatch.setattr(cards.time, "time", lambda: now)
-    seen = {f"p:{i}": {"due": now + DAY, "first": now - 60, "interval": 1, "ease": 2.5, "reps": 1, "lapses": 0}
-            for i in range(15)}  # 15 new cards started earlier today
-    monkeypatch.setattr(cards, "load_reviews", lambda: seen)
-    deck = [{"id": str(i), "front": str(i), "back": "b"} for i in range(40)]
-    assert len(cards.due([{"id": "p", "title": "T", "cards": deck}])["queue"]) == 5
 
 
 def test_title_guess_and_first_author():
