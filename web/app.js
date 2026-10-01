@@ -2882,3 +2882,9 @@ scrollTrack.addEventListener("pointerdown", (e) => {
   scrollToThumb(e.clientY - scrollTrack.getBoundingClientRect().top - thumbH / 2);
 });
 updateScrollThumb();
+
+// iOS ignores the viewport's user-scalable=no in places; its pinch gestures
+// can still be cancelled directly.
+for (const ev of ["gesturestart", "gesturechange", "gestureend"]) {
+  document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+}
