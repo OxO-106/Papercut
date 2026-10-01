@@ -824,3 +824,23 @@ a.ref-act { color: var(--accent); }
   .cont-pct { font-size: .8rem; }
 }
 .lib-row-main { min-width: 0; }
+
+/* ---------- Page scrollbar ----------
+   The browser's scrollbar runs the window's full height, beside the top bar,
+   so the bar looked cut off on the right. It is hidden and replaced by a slim
+   one that starts below the top bar (and ends above the phone's tab bar). */
+html { scrollbar-width: none; }
+html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
+.scroll-track {
+  position: fixed; right: 0; top: calc(var(--bar-h) + 3px); bottom: calc(var(--tabs-h) + 3px);
+  width: 14px; z-index: 13; touch-action: none;
+}
+.scroll-thumb {
+  position: absolute; top: 0; right: 3px; width: 6px; border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 32%, transparent);
+  opacity: 0; transition: opacity .35s, width .12s, right .12s;
+}
+@media (hover: hover) { .scroll-thumb { opacity: .45; } }
+.scrolling .scroll-thumb, .scroll-track:hover .scroll-thumb, .scroll-thumb.dragging { opacity: 1; }
+.scroll-track:hover .scroll-thumb, .scroll-thumb.dragging { width: 9px; right: 2px; }
+@media (hover: none) { .scroll-track { pointer-events: none; } } /* touch: a scroll indicator only */

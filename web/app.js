@@ -2828,3 +2828,57 @@ async function searchInside() {
 }
 
 route();
+
+// ---------- Page scrollbar ----------
+// Drawn by the page (the browser's is hidden in style.css) so it starts below
+// the top bar. Drag the thumb, or click the track to jump there.
+const scrollTrack = el("div", "scroll-track");
+const scrollThumb = el("div", "scroll-thumb");
+scrollTrack.append(scrollThumb);
+document.body.append(scrollTrack);
+let thumbH = 0, scrollingTimer = null;
+
+function updateScrollThumb() {
+  const total = document.documentElement.scrollHeight, view = window.innerHeight, track = scrollTrack.clientHeight;
+  scrollTrack.hidden = total <= view + 1;
+  if (scrollTrack.hidden) return;
+  thumbH = Math.max(36, (track * view) / total);
+  const y = ((track - thumbH) * window.scrollY) / (total - view);
+  scrollThumb.style.height = `${thumbH}px`;
+  scrollThumb.style.transform = `translateY(${Math.max(0, Math.min(track - thumbH, y))}px)`;
+}
+
+window.addEventListener("scroll", () => {
+  updateScrollThumb();
+  document.body.classList.add("scrolling");
+  clearTimeout(scrollingTimer);
+  scrollingTimer = setTimeout(() => document.body.classList.remove("scrolling"), 900);
+}, { passive: true });
+window.addEventListener("resize", updateScrollThumb);
+new ResizeObserver(updateScrollThumb).observe(document.body);
+
+// Scroll so the thumb's top sits at `y` px down the track.
+function scrollToThumb(y) {
+  const total = document.documentElement.scrollHeight, view = window.innerHeight;
+  window.scrollTo(0, (y / Math.max(1, scrollTrack.clientHeight - thumbH)) * (total - view));
+}
+scrollThumb.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const startY = e.clientY, startTop = scrollThumb.getBoundingClientRect().top - scrollTrack.getBoundingClientRect().top;
+  scrollThumb.classList.add("dragging");
+  scrollThumb.setPointerCapture(e.pointerId);
+  const move = (ev) => scrollToThumb(startTop + ev.clientY - startY);
+  const up = () => {
+    scrollThumb.classList.remove("dragging");
+    scrollThumb.removeEventListener("pointermove", move);
+    scrollThumb.removeEventListener("pointerup", up);
+  };
+  scrollThumb.addEventListener("pointermove", move);
+  scrollThumb.addEventListener("pointerup", up);
+});
+scrollTrack.addEventListener("pointerdown", (e) => {
+  if (e.target !== scrollTrack) return;
+  scrollToThumb(e.clientY - scrollTrack.getBoundingClientRect().top - thumbH / 2);
+});
+updateScrollThumb();
