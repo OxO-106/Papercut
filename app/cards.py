@@ -1,7 +1,7 @@
 """Flashcards and spaced-repetition review.
 
 Cards are written by the local model from what it already knows about the
-paper: its summary, its key highlights (with margin notes) and the answered
+paper, as many as are worth having (no fixed number): its summary, its key highlights (with margin notes) and the answered
 Questions. Each card is a question on the front and a short answer on the
 back, tied to the highlights it tests, so review can jump back to the paper.
 The reader can also add, edit and delete cards.
@@ -28,7 +28,8 @@ GRADES = ("again", "hard", "good", "easy")
 _lock = threading.Lock()
 
 SYSTEM = """You make flashcards for a researcher who read the paper "{title}" and wants to remember what matters in it.
-Write {n} cards. Each tests one thing worth remembering: the core idea, a key design decision and why it was made, a key result (with its number), a definition, a limitation, or an insight that connects ideas. Mix the kinds; favour understanding ("why", "how", "what happens if") over trivia, but include the numbers that matter.
+Write a card for everything in the paper that is genuinely worth remembering, and nothing else. There is no target number: a rich paper may deserve many cards, a thin one only a few. Never pad with trivia or near-duplicates to reach a count; every card must be meaningful and insightful on its own.
+Each card tests one thing worth remembering: the core idea, a key design decision and why it was made, a key result (with its number), a definition, a limitation, or an insight that connects ideas. Mix the kinds; favour understanding ("why", "how", "what happens if") over trivia, but include the numbers that matter.
 - front: a question that makes sense on its own, months later: name the method, benchmark or concept (never "this paper" alone, never "the authors" without saying who or what). At most 30 words.
 - back: the answer, short and complete: 1-3 sentences, at most 60 words.
 - kind: concept, method, result, definition, limitation or insight.
@@ -44,7 +45,6 @@ SCHEMA = {
     }, "required": ["front", "back", "kind", "hl"]}}},
     "required": ["cards"],
 }
-N_CARDS = 15
 
 
 def card_id(front: str) -> str:
@@ -75,13 +75,13 @@ def generate(paper: dict, progress=lambda s, f: None) -> dict:
         raise ValueError("This paper has no highlights or summary yet to make cards from.")
 
     progress("Writing flashcards", 0.1)
-    messages = [{"role": "system", "content": SYSTEM.format(title=paper["meta"]["title"], n=N_CARDS)},
+    messages = [{"role": "system", "content": SYSTEM.format(title=paper["meta"]["title"])},
                 {"role": "user", "content": "\n\n".join(parts)}]
-    raw = llm.chat(messages, schema=SCHEMA, temperature=0.4, max_tokens=9000, think=True)
+    raw = llm.chat(messages, schema=SCHEMA, temperature=0.4, max_tokens=14000, think=True)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        data = json.loads(llm.chat(messages, schema=SCHEMA, temperature=0.4, max_tokens=4000))
+        data = json.loads(llm.chat(messages, schema=SCHEMA, temperature=0.4, max_tokens=7000))
     cards, seen = [], set()
     now = time.time()
     for c in data.get("cards", []):

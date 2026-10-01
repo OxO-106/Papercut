@@ -2300,7 +2300,7 @@ function renderCards(data, st) {
     box.append(head);
   } else if (!running) {
     const intro = el("div", "q-intro");
-    intro.append(el("p", null, "Flashcards for what's worth remembering in this paper: the core idea, key design decisions, results with their numbers, definitions and limitations. Go through them whenever you like, from here or from Review at the top; the ones you find hard come first."));
+    intro.append(el("p", null, "Flashcards, as many as are worth having, for what's worth remembering in this paper: the core idea, key design decisions, results with their numbers, definitions and limitations. Go through them whenever you like, from here or from Review at the top; the ones you find hard come first."));
     const go = el("button", "q-go", "Make flashcards");
     go.type = "button";
     go.addEventListener("click", startCards);
