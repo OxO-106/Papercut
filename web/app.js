@@ -2705,7 +2705,14 @@ function libRow(p) {
       }
       setShelf(p, { collection: v || null });
     });
-    side.append(status, col);
+    // The collection's full name shows (wrapping if long); the select lies
+    // invisibly over it, so a click still opens the usual menu.
+    const colBox = el("label", "lib-col");
+    colBox.title = col.title;
+    colBox.append(el("span", "lib-col-icon", "▤"), el("span", "lib-col-name", p.collection || "No collection"), el("span", "lib-col-caret", "▾"));
+    col.className = "lib-col-select";
+    colBox.append(col);
+    side.append(status, colBox);
     if (p.percent >= 1) {
       const bar = el("span", "cont-bar");
       const fill = el("span");
