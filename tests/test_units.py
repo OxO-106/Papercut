@@ -200,3 +200,11 @@ def test_markdown_lists_underlines():
     p["underlines"] = [{"id": "u1", "sid": "s2", "a": 0, "b": 7}]
     md = markdown.render(p, ["underlines"])
     assert "## Underlined" in md and "- X beats (p. 3)" in md
+
+
+def test_math_ranges_bridge_operators_and_close_brackets():
+    from app.segment import _math_ranges
+    s = "policy π(at|ct), where"
+    #     0123456789012345678
+    assert _math_ranges(s, [7, 9, 10, 12, 13]) == [[7, 15]]  # "π(at|ct)", not the comma
+    assert _math_ranges("ot ∈ O and x", [0, 1, 5, 11]) == [[0, 6], [11, 12]]

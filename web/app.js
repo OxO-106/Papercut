@@ -293,12 +293,12 @@ function sentenceContent(span, s, sid) {
     ...(s.cites || []).map(([a, b, refs]) => ({ a, b, refs, cls: "cite" })),
     ...(s.xrefs || []).map(([a, b, refs]) => ({ a, b, refs, cls: "xref" })),
   ].sort((x, y) => x.a - y.a);
-  const bold = s.bold || [], italic = s.italic || [], sub = s.sub || [], sup = s.sup || [];
+  const bold = s.bold || [], italic = s.italic || [], sub = s.sub || [], sup = s.sup || [], math = s.math || [];
   const lines = (current?.underlines || []).filter((u) => u.sid === sid);
   const fixes = displayFixes(s.text);
   const cuts = new Set([0, s.text.length]);
   for (const m of marks) cuts.add(m.a).add(m.b);
-  for (const [a, b] of [...bold, ...italic, ...sub, ...sup]) cuts.add(a).add(b);
+  for (const [a, b] of [...bold, ...italic, ...sub, ...sup, ...math]) cuts.add(a).add(b);
   for (const u of lines) cuts.add(u.a).add(u.b);
   for (const f of fixes) cuts.add(f.a).add(f.b);
   const points = [...cuts].filter((x) => x >= 0 && x <= s.text.length).sort((x, y) => x - y);
@@ -318,9 +318,12 @@ function sentenceContent(span, s, sid) {
     if (!piece) continue;
     const mark = marks.find((m) => m.a <= a && b <= m.b);
     const within = (ranges) => ranges.some(([x, y]) => x <= a && b <= y);
-    const text = document.createTextNode(piece);
-    textRange.set(text, range);
-    let node = text;
+    let node;
+    if (within(math)) node = mathText(piece, range, !!fix);
+    else {
+      node = document.createTextNode(piece);
+      textRange.set(node, range);
+    }
     if (within(sub)) { const e = el("sub"); e.append(node); node = e; }
     else if (within(sup)) { const e = el("sup"); e.append(node); node = e; }
     if (within(italic)) { const em = el("em"); em.append(node); node = em; }
@@ -340,6 +343,27 @@ function sentenceContent(span, s, sid) {
       span.append(node);
     }
   }
+}
+
+// Math as typeset: letters (variables) italic, digits and operators upright,
+// all in the math font (see .math in style.css).
+function mathText(piece, range, whole) {
+  const m = el("span", "math");
+  if (whole) { // a tidied stretch ("â"): one node for the whole of it
+    const t = document.createTextNode(piece);
+    textRange.set(t, range);
+    if (/\p{L}/u.test(piece)) { const i = el("i"); i.append(t); m.append(i); } else m.append(t);
+    return m;
+  }
+  let at = range[0];
+  for (const part of piece.split(/(\p{L}+)/u)) {
+    if (!part) continue;
+    const t = document.createTextNode(part);
+    textRange.set(t, [at, at + part.length]);
+    at += part.length;
+    if (/^\p{L}/u.test(part)) { const i = el("i"); i.append(t); m.append(i); } else m.append(t);
+  }
+  return m;
 }
 
 function sentenceSpans(parent, ids, paper) {

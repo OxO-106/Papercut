@@ -5,6 +5,10 @@
 @font-face { font-family: "Open Sans"; src: url(fonts/OpenSans.ttf); font-weight: 300 800; font-style: normal; font-display: swap; }
 @font-face { font-family: "Open Sans"; src: url(fonts/OpenSans-Italic.ttf); font-weight: 300 800; font-style: italic; font-display: swap; }
 @font-face { font-family: "Roboto"; src: url(fonts/Roboto.ttf); font-weight: 100 900; font-style: normal; font-display: swap; }
+/* Math (STIX Two: text letters, plus the math font for operators and arrows) */
+@font-face { font-family: "STIX Two Text"; src: url(fonts/STIXTwoText.woff2) format("woff2"); font-weight: 400 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "STIX Two Text"; src: url(fonts/STIXTwoText-Italic.woff2) format("woff2"); font-weight: 400 700; font-style: italic; font-display: swap; }
+@font-face { font-family: "STIX Two Math"; src: url(fonts/STIXTwoMath.woff2) format("woff2"); font-display: swap; }
 @font-face { font-family: "Roboto"; src: url(fonts/Roboto-Italic.ttf); font-weight: 100 900; font-style: italic; font-display: swap; }
 
 :root {
@@ -855,3 +859,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
 .paper .ul { text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
 .paper sub, .paper sup { font-size: .72em; line-height: 0; }
 .underline-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Formulas in running text: the paper's math, in a math font */
+.paper .math { font-family: "STIX Two Text", "STIX Two Math", var(--font-body); font-size: 1.02em; }
+.paper .math i { font-style: italic; }

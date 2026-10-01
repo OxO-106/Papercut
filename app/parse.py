@@ -933,7 +933,9 @@ def _merge_split_paragraphs(raw: list[dict]) -> list[dict]:
 # Words match any case; the short suffixes must match case exactly ("Medi" is bold, not italic).
 _BOLD_FONT = re.compile(r"(?i:bold|black|heavy|semibold|demi|medi|cmbx)|(?<=[a-z])(T?B|Bd|RB|SB)I?$|-B$")
 _ITALIC_FONT = re.compile(r"(?i:ital|oblique|cmti)|(?<=[a-z])(T|R|B|TB|RB)?I$|-It$")
-_MATH_FONT = re.compile(r"cmmi|cmsy|math|symbol|msbm|txsy|stix", re.I)  # italic letters in formulas aren't emphasis
+# Math fonts (TeX's Computer Modern math, AMS, txfonts/newtx, STIX, Cambria/Latin Modern Math):
+# italic letters in formulas aren't emphasis, and their text is shown in a math font.
+_MATH_FONT = re.compile(r"cmmi|cmsy|cmex|math|symbol|msbm|msam|eufm|rsfs|txsy|txmi|txex|stix|lmmi|lmsy", re.I)
 BOLD, ITALIC = 1, 2
 
 
@@ -947,19 +949,21 @@ def _span_style(span) -> int:
     return style
 
 
-SUB, SUP = 1, 2
+SUB, SUP, MATH = 1, 2, 3  # a character's code: 0 | SUB | SUP, plus MATH if set in a math font
 
 
 def _script_chars(page: fitz.Page) -> list[tuple[float, float, int]]:
-    """Centres of the characters on lines that have subscripts or
-    superscripts, as (x, y, 0 | SUB | SUP): characters in a span set noticeably smaller than its
-    line's main text and lowered (o_t, a_{t-1}) or raised (x^2, footnote marks)
-    relative to the line's baseline."""
+    """Centres of the characters on lines that have subscripts, superscripts
+    or math-font text, as (x, y, code). code = 0, SUB or SUP, plus MATH when
+    the character is set in a math font. Subscripts and superscripts are
+    characters in a span set noticeably smaller than its line's main text and
+    lowered (o_t, a_{t-1}) or raised (x^2, footnote marks) relative to the
+    line's baseline."""
     out = []
     for block in page.get_text("rawdict")["blocks"]:
         for line in block.get("lines", []):
             spans = [sp for sp in line["spans"] if sp.get("chars")]
-            if len(spans) < 2:
+            if not spans:
                 continue
             weight: dict[float, int] = {}
             for sp in spans:
@@ -973,7 +977,8 @@ def _script_chars(page: fitz.Page) -> list[tuple[float, float, int]]:
             for sp in spans:
                 dy = sp["origin"][1] - baseline
                 small = sp["size"] <= 0.85 * main
-                kinds.append(SUB if small and dy > 0.08 * main else SUP if small and dy < -0.2 * main else 0)
+                kind = SUB if small and dy > 0.08 * main else SUP if small and dy < -0.2 * main else 0
+                kinds.append(kind + (MATH if _MATH_FONT.search(sp["font"].split("+")[-1]) else 0))
             if not any(kinds):
                 continue
             # Every character of such a line, so words can be matched character by character.
@@ -986,27 +991,28 @@ def _script_chars(page: fitz.Page) -> list[tuple[float, float, int]]:
 
 
 def _word_scripts(w, scripts) -> str | None:
-    """For a word, a string with one character per non-space character of its
-    text: "0" normal, "1" subscript, "2" superscript; None when nothing in it
-    is raised or lowered (or its characters can't be lined up)."""
+    """For a word, a string with one digit per non-space character of its
+    text: the character's code (0 normal, 1 subscript, 2 superscript, plus 3
+    if in a math font); None when nothing in it is special (or its characters
+    can't be lined up)."""
     x0, y0, x1, y1, text = w[0], w[1], w[2], w[3], w[4]
     inside = sorted((cx, k) for cx, cy, k in scripts if x0 - .5 <= cx <= x1 + .5 and y0 - .5 <= cy <= y1 + .5)
     if not any(k for _, k in inside):
         return None
     chars = [c for c in text if not c.isspace()]
-    if len(chars) < 2:
-        return None  # a lone small character (e.g. a footnote mark): leave it
     if len(inside) == len(chars):  # the usual case: the PDF's own characters, in order
-        kinds = [str(k) for _, k in inside]
+        kinds = [k for _, k in inside]
     else:  # ligatures etc.: spread the characters evenly across the box
         step = (x1 - x0) / len(chars)
-        kinds = ["0"] * len(chars)
+        kinds = [0] * len(chars)
         for cx, k in inside:
             if k:
-                kinds[min(len(chars) - 1, max(0, int((cx - x0) / step)))] = str(k)
-    if kinds[0] != "0":
-        return None  # the word starts small: not a base letter with a script
-    return "".join(kinds)
+                kinds[min(len(chars) - 1, max(0, int((cx - x0) / step)))] = k
+    if kinds[0] % MATH and (len(chars) < 2 or not kinds[0] >= MATH):
+        # The word starts small: a footnote mark or the like, not a base
+        # letter with a script. Keep only its math-font marks.
+        kinds = [MATH * (k >= MATH) for k in kinds]
+    return "".join(map(str, kinds)) if any(kinds) else None
 
 
 def _page_words(pdf: fitz.Document) -> dict[int, list[tuple]]:

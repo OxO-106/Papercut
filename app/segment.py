@@ -57,8 +57,8 @@ def _normalize(s: str) -> tuple[str, list[int]]:
 
 
 def _align(tnorm: str, words: list[tuple]) -> tuple[dict[int, int], str, dict[int, int]]:
-    """Map normalized text positions to word indices, and to the script kind
-    (1 subscript, 2 superscript) of characters that are raised or lowered."""
+    """Map normalized text positions to word indices, and to the code of
+    special characters (1 subscript, 2 superscript, plus 3 in a math font)."""
     wchars, wmap, wkind = [], [], []
     for wi, w in enumerate(words):
         n, idx = _normalize(w[5])
@@ -118,10 +118,11 @@ def map_sentences(text: str, spans: list[tuple[int, int]], words: list[tuple]) -
     style has bit 1 for bold and bit 2 for italic.
     rects: [{"page": n, "bbox": [x0, y0, x1, y1]}], one per text line touched.
     coverage: fraction of the sentence's normalized characters found on the page.
-    styles: {"bold": [[start, end], ...], "italic", "sub", "sup"}: character
-    ranges (relative to the sentence) set in bold or italic in the PDF, e.g.
-    run-in headings like "Evaluation metrics." or "Contributions.", and
-    subscripts/superscripts (the t of o_t, the t-1 of a_{t-1}).
+    styles: {"bold": [[start, end], ...], "italic", "sub", "sup", "math"}:
+    character ranges (relative to the sentence) set in bold or italic in the
+    PDF, e.g. run-in headings like "Evaluation metrics." or "Contributions.",
+    subscripts/superscripts (the t of o_t, the t-1 of a_{t-1}), and text set
+    in a math font ("o_t ∈ O").
     """
     tnorm, tidx = _normalize(text)
     t2w, _, t2k = _align(tnorm, words)  # text-normalized position -> word index, script kind
@@ -156,8 +157,9 @@ def map_sentences(text: str, spans: list[tuple[int, int]], words: list[tuple]) -
         results.append((rects, round(coverage, 3), {
             "bold": _ranges(sentence, [c for c, st in styled if st & 1]),
             "italic": _ranges(sentence, [c for c, st in styled if st & 2]),
-            "sub": _script_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p) == 1)),
-            "sup": _script_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p) == 2)),
+            "sub": _script_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p, 0) % 3 == 1)),
+            "sup": _script_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p, 0) % 3 == 2)),
+            "math": _math_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p, 0) >= 3)),
         }))
     return results
 
@@ -189,4 +191,21 @@ def _script_ranges(sentence: str, chars: list[int]) -> list[list[int]]:
             out[-1][1] = c + 1
         else:
             out.append([c, c + 1])
+    return out
+
+
+def _math_ranges(sentence: str, chars: list[int]) -> list[list[int]]:
+    """Merge math-font characters into formula stretches, bridging the spaces,
+    operators and brackets between them ("o_t ∈ O", "π(a_t|c_t)"), which the
+    character alignment can't see."""
+    out: list[list[int]] = []
+    for c in chars:
+        gap = sentence[out[-1][1]:c] if out else None
+        if out and len(gap) <= 4 and all(not ch.isalnum() for ch in gap):
+            out[-1][1] = c + 1
+        else:
+            out.append([c, c + 1])
+    for r in out:  # take in brackets that close the formula: "π(a|c)" not "π(a|c"
+        while r[1] < len(sentence) and sentence[r[1]] in ")]}|'′":
+            r[1] += 1
     return out
