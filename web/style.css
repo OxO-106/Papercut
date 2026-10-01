@@ -569,7 +569,7 @@ button:disabled { opacity: .55; cursor: default; }
   display: grid; grid-template-columns: minmax(0, 1fr) 11rem; gap: 1.2rem; padding: 1rem .2rem;
   border-bottom: 1px solid var(--rule);
 }
-@media (max-width: 760px) { .lib-row { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .lib-row { grid-template-columns: minmax(0, 1fr); } }
 .lib-title { font-weight: 600; font-size: 1.02rem; line-height: 1.35; color: var(--fg); text-decoration: none; }
 .lib-title:hover { color: var(--accent); }
 .lib-meta { margin-top: .2rem; font-size: .82rem; color: var(--muted); }
@@ -712,7 +712,7 @@ a.ref-act { color: var(--accent); }
 .rv-done .rv-actions { margin-top: 1rem; }
 /* Library row: the collection, in full */
 .lib-row { grid-template-columns: minmax(0, 1fr) 15rem; }
-@media (max-width: 760px) { .lib-row { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .lib-row { grid-template-columns: minmax(0, 1fr); } }
 .lib-col {
   position: relative; display: flex; align-items: flex-start; gap: .4rem; padding: .3rem .5rem;
   border: 1px solid var(--rule); border-radius: 6px; font-size: .82rem; line-height: 1.35; cursor: pointer;
@@ -804,3 +804,23 @@ a.ref-act { color: var(--accent); }
   .rv-show { grid-column: 1 / -1; padding: .9rem; }
   .rv-keys { display: none; }
 }
+
+/* Phones, less packed: one size larger text, a 5% margin on each side, and
+   fewer details per paper (the full set is on the paper's Summary panel). */
+@media (max-width: 760px) {
+  html { font-size: 17px; }
+  .home, .review, .qview { width: auto; margin-left: 0; margin-right: 0; padding: 0 5vw; }
+  .paper { padding-left: calc(5vw + env(safe-area-inset-left)); padding-right: calc(5vw + env(safe-area-inset-right)); }
+  .chat-log { padding-left: calc(5vw + env(safe-area-inset-left)); padding-right: calc(5vw + env(safe-area-inset-right)); }
+  .bar { padding-left: calc(5vw + env(safe-area-inset-left)); padding-right: calc(5vw + env(safe-area-inset-right)); }
+
+  /* Library rows: title, one line of authors, a two-line summary, status. */
+  .lib-row { padding: 1.1rem 0; gap: .7rem; }
+  .lib-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lib-tldr { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .lib-tags .topic:nth-of-type(n+3), .tag-add, .lib-counts { display: none; }
+  .add-row { gap: .6rem; }
+  .lib, .continue { margin-top: 1.6rem; }
+  .cont-pct { font-size: .8rem; }
+}
+.lib-row-main { min-width: 0; }

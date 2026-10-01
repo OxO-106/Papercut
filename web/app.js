@@ -51,7 +51,7 @@ delete settings.density; // the density slider was removed: every highlight the 
 const phone = matchMedia("(max-width: 760px)");
 const sizeKey = () => (phone.matches ? "phoneSize" : "size");
 const leadingKey = () => (phone.matches ? "phoneLeading" : "leading");
-const PHONE_DEFAULTS = { phoneSize: 18, phoneLeading: 1.6 };
+const PHONE_DEFAULTS = { phoneSize: 19, phoneLeading: 1.6 };
 let wasPhone = phone.matches;
 const recheckPhone = () => { if (phone.matches !== wasPhone) { wasPhone = phone.matches; applySettings(); } };
 phone.addEventListener("change", recheckPhone);
