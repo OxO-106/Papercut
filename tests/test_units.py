@@ -208,3 +208,30 @@ def test_math_ranges_bridge_operators_and_close_brackets():
     #     0123456789012345678
     assert _math_ranges(s, [7, 9, 10, 12, 13]) == [[7, 15]]  # "π(at|ct)", not the comma
     assert _math_ranges("ot ∈ O and x", [0, 1, 5, 11]) == [[0, 6], [11, 12]]
+
+
+
+def test_tidy_headings_and_glued_symbols():
+    from app.parse import _tidy_text
+    raw = [
+        {"type": "heading", "text": "2 REAC T: S YNERGIZING REASONING +ACTING"},
+        {"type": "heading", "text": "R E F E R E N C E S"},
+        {"type": "heading", "text": "E.1 Ethics &Broader Impacts"},
+        {"type": "heading", "text": "APPENDIX B"},
+        {"type": "heading", "text": "F IN-DEPTH ANALYSIS"},
+        {"type": "paragraph", "text": "We propose ReAct, synergizing x +y and Chain-of-Thought +Reflexion."},
+    ]
+    out = [b["text"] for b in _tidy_text(raw)]
+    assert out[:5] == ["2 REACT: SYNERGIZING REASONING + ACTING", "REFERENCES", "E.1 Ethics & Broader Impacts",
+                       "APPENDIX B", "F IN-DEPTH ANALYSIS"]
+    assert out[5] == "We propose ReAct, synergizing x +y and Chain-of-Thought + Reflexion."
+
+
+def test_carry_over_matches_slightly_changed_text():
+    old = {"sentences": {"s1": {"text": "Chain-of-Thought +Reflexion works."}}, "blocks": [], "status": {},
+           "ai_labels": {"s1": {"category": "result", "confidence": .9, "tier": 1}},
+           "underlines": [{"id": "u", "sid": "s1", "a": 0, "b": 5}]}
+    new = {"sentences": {"t1": {"text": "Chain-of-Thought + Reflexion works."}}, "blocks": [], "status": {}}
+    carry_over(old, new)
+    assert new["ai_labels"] == {"t1": old["ai_labels"]["s1"]}
+    assert new["underlines"] == []  # offsets may have moved: dropped rather than misplaced

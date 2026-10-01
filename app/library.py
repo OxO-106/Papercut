@@ -81,12 +81,40 @@ def update_paper(paper_id: str, fn) -> dict:
         return paper
 
 
+class _TextIndex:
+    """Sentence text -> id in a freshly parsed paper. A sentence the parser now
+    writes slightly differently (a space added after "+", a word rejoined)
+    still matches by its letters and digits alone."""
+
+    def __init__(self, sentences: dict):
+        self.exact, self.loose = {}, {}
+        for sid, s in sentences.items():
+            self.exact.setdefault(s["text"], sid)
+            self.loose.setdefault(self._key(s["text"]), sid)
+
+    @staticmethod
+    def _key(text) -> str:
+        return "".join(ch for ch in (text or "").lower() if ch.isalnum())
+
+    def get(self, text, default=None):
+        if text is None:
+            return default
+        return self.exact.get(text) or self.loose.get(self._key(text)) or default
+
+    def __contains__(self, text) -> bool:
+        return self.get(text) is not None
+
+    def __getitem__(self, text):
+        sid = self.get(text)
+        if sid is None:
+            raise KeyError(text)
+        return sid
+
+
 def carry_over(old: dict, new: dict) -> None:
     """Keep AI labels and user edits across a re-parse. Sentence ids are
     renumbered when parsing changes, so match sentences by their text."""
-    by_text = {}
-    for sid, s in new["sentences"].items():
-        by_text.setdefault(s["text"], sid)
+    by_text = _TextIndex(new["sentences"])
 
     def remap(labels: dict) -> dict:
         out = {}
@@ -121,8 +149,9 @@ def carry_over(old: dict, new: dict) -> None:
             for src in q.get("sources", []):
                 src["sid"] = by_text.get(old["sentences"].get(src.get("sid"), {}).get("text"))
     # Underlines: same sentence text, same character offsets.
-    new["underlines"] = [dict(u, sid=by_text[old["sentences"][u["sid"]]["text"]]) for u in old.get("underlines", [])
-                         if old["sentences"].get(u["sid"], {}).get("text") in by_text]
+    # (exact text only: underlines are character offsets into it)
+    new["underlines"] = [dict(u, sid=by_text.exact[old["sentences"][u["sid"]]["text"]]) for u in old.get("underlines", [])
+                         if old["sentences"].get(u["sid"], {}).get("text") in by_text.exact]
     # Summary and flashcards point at highlights too.
     move = lambda sids: [x for x in (by_text.get(old["sentences"].get(h, {}).get("text")) for h in sids or []) if x]
     if old.get("summary"):

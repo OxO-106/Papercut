@@ -192,6 +192,7 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
 
     raw = _drop_text_inside_floats(raw)
     raw, title = _fix_front_matter(raw, pdf)
+    raw = _tidy_text(raw)
 
     # Captions Docling read as body text ("Table 3: BM25 recall ..."). Must run
     # before table detection (a caption like "Table 5: ... GPT-3.5" is number-
@@ -412,6 +413,40 @@ def _fix_front_matter(raw: list[dict], pdf: fitz.Document) -> tuple[list[dict], 
     t = next(b for b in raw if b["type"] == "title")
     raw.remove(t)
     return [t] + raw, title
+
+
+_SPACED_LETTERS = re.compile(r"\b(?:[A-Z] ){3,}[A-Z]\b")  # "R E F E R E N C E S"
+_GLUED_SYMBOL = re.compile(r"(?<=\s)([&+])(?=[A-Za-z])")  # "Ethics &Broader", "REASONING +ACTING"
+
+
+def _tidy_text(raw: list[dict]) -> list[dict]:
+    """Small fixes to text the PDF's layout garbled.
+    - A space before "&" or "+" but none after ("Ethics &Broader",
+      "Chain-of-Thought +Reflexion"): add the missing one. In body text only
+      before a capitalised word, so formulas ("+x") are left alone.
+    - Headings set in letter-spaced small capitals: "R E F E R E N C E S" is
+      joined, and a lone capital split off a word ("REAC T", "S YNERGIZING")
+      is joined back when the joined word occurs in the paper ("react" from
+      ReAct), so "APPENDIX B" or "F IN-DEPTH ANALYSIS" stay as they are."""
+    vocab = {w for b in raw if b.get("text") for w in re.findall(r"[a-z]+", b["text"].lower())}
+
+    def join(m):
+        word = m.group(1) + m.group(2)
+        return word if word.lower() in vocab else m.group(0)
+
+    for b in raw:
+        t = b.get("text")
+        if not t:
+            continue
+        if b["type"] == "heading":
+            t = _SPACED_LETTERS.sub(lambda m: m.group(0).replace(" ", ""), t)
+            t = re.sub(r"\b([A-Z][A-Za-z]+) ([B-HJ-Z])\b(?![.\-)])", join, t)  # "REAC T"
+            t = re.sub(r"(?<=[\s:(])([B-HJ-Z]) ([A-Z]{2,})\b", join, t)  # "S YNERGIZING"
+            t = _GLUED_SYMBOL.sub(r"\1 ", t)
+        else:
+            t = re.sub(r"(?<=\s)([&+])(?=[A-Z][a-z])", r"\1 ", t)
+        b["text"] = t
+    return raw
 
 
 def _join_caption_lines(raw: list[dict]) -> list[dict]:
