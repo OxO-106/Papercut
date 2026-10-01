@@ -186,3 +186,17 @@ def test_automatic_organize_only_files_new_papers(tmp_path, monkeypatch):
     assert r["assign"] == {"old": "Agents", "new": "Vision"}
     assert [c["name"] for c in r["collections"]] == ["Agents", "Vision"]
     assert catalog.organize(fresh=True)["assign"] == {"old": "Vision", "new": "Vision"}
+
+
+def test_script_ranges_bridge_symbols_not_spaces():
+    from app.segment import _script_ranges
+    s = "ot-1, at+1 x"
+    assert _script_ranges(s, [1, 3, 8, 9]) == [[1, 4], [8, 10]]  # "t-1", "t+1"
+    assert _script_ranges("a b", [0, 2]) == [[0, 1], [2, 3]]
+
+
+def test_markdown_lists_underlines():
+    p = json.loads(json.dumps(PAPER))
+    p["underlines"] = [{"id": "u1", "sid": "s2", "a": 0, "b": 7}]
+    md = markdown.render(p, ["underlines"])
+    assert "## Underlined" in md and "- X beats (p. 3)" in md

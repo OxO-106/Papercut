@@ -56,21 +56,33 @@ def _normalize(s: str) -> tuple[str, list[int]]:
     return "".join(out), idx
 
 
-def _align(tnorm: str, words: list[tuple]) -> tuple[dict[int, int], str]:
-    """Map normalized text positions to word indices."""
-    wchars, wmap = [], []
+def _align(tnorm: str, words: list[tuple]) -> tuple[dict[int, int], str, dict[int, int]]:
+    """Map normalized text positions to word indices, and to the script kind
+    (1 subscript, 2 superscript) of characters that are raised or lowered."""
+    wchars, wmap, wkind = [], [], []
     for wi, w in enumerate(words):
-        n, _ = _normalize(w[5])
+        n, idx = _normalize(w[5])
         wchars.append(n)
         wmap.extend([wi] * len(n))
+        scripts = w[8] if len(w) > 8 else None
+        if scripts:
+            # scripts has one entry per non-space character of the word's text
+            nonspace = [i for i, c in enumerate(w[5]) if not c.isspace()]
+            pos = {ci: k for k, ci in enumerate(nonspace)}
+            wkind.extend(int(scripts[pos[i]]) if pos.get(i, len(scripts)) < len(scripts) else 0 for i in idx)
+        else:
+            wkind.extend([0] * len(n))
     wnorm = "".join(wchars)
     t2w: dict[int, int] = {}
+    t2k: dict[int, int] = {}
     if tnorm and wnorm:
         sm = SequenceMatcher(None, tnorm, wnorm, autojunk=False)
         for a, b, size in sm.get_matching_blocks():
             for k in range(size):
                 t2w[a + k] = wmap[b + k]
-    return t2w, wnorm
+                if wkind[b + k]:
+                    t2k[a + k] = wkind[b + k]
+    return t2w, wnorm, t2k
 
 
 def restore_spaces(text: str, words: list[tuple]) -> str:
@@ -80,7 +92,7 @@ def restore_spaces(text: str, words: list[tuple]) -> str:
     if not words:
         return text
     tnorm, tidx = _normalize(text)
-    t2w, _ = _align(tnorm, words)
+    t2w = _align(tnorm, words)[0]
     inserts = []
     for p in range(1, len(tnorm)):
         if p not in t2w or p - 1 not in t2w or t2w[p] == t2w[p - 1]:
@@ -106,12 +118,13 @@ def map_sentences(text: str, spans: list[tuple[int, int]], words: list[tuple]) -
     style has bit 1 for bold and bit 2 for italic.
     rects: [{"page": n, "bbox": [x0, y0, x1, y1]}], one per text line touched.
     coverage: fraction of the sentence's normalized characters found on the page.
-    styles: {"bold": [[start, end], ...], "italic": [...]}: character ranges
-    (relative to the sentence) set in bold or italic in the PDF, e.g. run-in
-    headings like "Evaluation metrics." or "Contributions."
+    styles: {"bold": [[start, end], ...], "italic", "sub", "sup"}: character
+    ranges (relative to the sentence) set in bold or italic in the PDF, e.g.
+    run-in headings like "Evaluation metrics." or "Contributions.", and
+    subscripts/superscripts (the t of o_t, the t-1 of a_{t-1}).
     """
     tnorm, tidx = _normalize(text)
-    t2w, _ = _align(tnorm, words)  # text-normalized position -> word index
+    t2w, _, t2k = _align(tnorm, words)  # text-normalized position -> word index, script kind
 
     results = []
     pos = 0
@@ -129,7 +142,7 @@ def map_sentences(text: str, spans: list[tuple[int, int]], words: list[tuple]) -
         lines: dict[tuple, list[float]] = {}
         order = []
         for wi in sorted(set(hit)):
-            page, x0, y0, x1, y1, _, line_key, _ = words[wi]
+            page, x0, y0, x1, y1, _, line_key = words[wi][:7]
             key = (page, line_key)
             if key not in lines:
                 lines[key] = [x0, y0, x1, y1]
@@ -143,6 +156,8 @@ def map_sentences(text: str, spans: list[tuple[int, int]], words: list[tuple]) -
         results.append((rects, round(coverage, 3), {
             "bold": _ranges(sentence, [c for c, st in styled if st & 1]),
             "italic": _ranges(sentence, [c for c, st in styled if st & 2]),
+            "sub": _script_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p) == 1)),
+            "sup": _script_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p) == 2)),
         }))
     return results
 
@@ -161,4 +176,17 @@ def _ranges(sentence: str, chars: list[int]) -> list[list[int]]:
             r[0] -= 1  # opening quote or bracket: "'Oracle' retrieval."
         while r[1] < len(sentence) and not sentence[r[1]].isalnum() and not sentence[r[1]].isspace():
             r[1] += 1
+    return out
+
+
+def _script_ranges(sentence: str, chars: list[int]) -> list[list[int]]:
+    """Merge subscript characters into ranges, bridging only symbols between
+    them ("t-1", "t+1"), never spaces."""
+    out: list[list[int]] = []
+    for c in chars:
+        gap = sentence[out[-1][1]:c] if out else None
+        if out and all(not ch.isalnum() and not ch.isspace() for ch in gap) and len(gap) <= 2:
+            out[-1][1] = c + 1
+        else:
+            out.append([c, c + 1])
     return out

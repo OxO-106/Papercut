@@ -120,6 +120,9 @@ def carry_over(old: dict, new: dict) -> None:
             q["highlights"] = [x for x in (by_text.get(old["sentences"].get(h, {}).get("text")) for h in q.get("highlights", [])) if x]
             for src in q.get("sources", []):
                 src["sid"] = by_text.get(old["sentences"].get(src.get("sid"), {}).get("text"))
+    # Underlines: same sentence text, same character offsets.
+    new["underlines"] = [dict(u, sid=by_text[old["sentences"][u["sid"]]["text"]]) for u in old.get("underlines", [])
+                         if old["sentences"].get(u["sid"], {}).get("text") in by_text]
     # Summary and flashcards point at highlights too.
     move = lambda sids: [x for x in (by_text.get(old["sentences"].get(h, {}).get("text")) for h in sids or []) if x]
     if old.get("summary"):

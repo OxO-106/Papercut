@@ -144,6 +144,42 @@ def delete_note(paper_id: str, note_id: str):
     return {"ok": True}
 
 
+# ---- Underlines: character ranges within sentences, set by the reader.
+
+@app.post("/api/papers/{paper_id}/underlines")
+def add_underlines(paper_id: str, body: dict = Body(...)):
+    """{ranges: [{sid, a, b}]}: underline these stretches. Overlapping or
+    touching underlines in a sentence merge into one. Returns all underlines."""
+    _existing(paper_id)
+    ranges = body.get("ranges") or []
+
+    def apply(p):
+        lines = p.setdefault("underlines", [])
+        for r in ranges:
+            sid = str(r.get("sid", ""))
+            s = p["sentences"].get(sid)
+            try:
+                a, b = int(r.get("a")), int(r.get("b"))
+            except (TypeError, ValueError):
+                continue
+            if not s or not 0 <= a < b <= len(s["text"]):
+                continue
+            touching = [u for u in lines if u["sid"] == sid and u["a"] <= b and a <= u["b"]]
+            for u in touching:
+                a, b = min(a, u["a"]), max(b, u["b"])
+                lines.remove(u)
+            lines.append({"id": uuid.uuid4().hex[:10], "sid": sid, "a": a, "b": b, "created": time.time()})
+
+    return library.update_paper(paper_id, apply).get("underlines", [])
+
+
+@app.delete("/api/papers/{paper_id}/underlines/{underline_id}")
+def delete_underline(paper_id: str, underline_id: str):
+    _existing(paper_id)
+    return library.update_paper(paper_id, lambda p: p.update(
+        underlines=[u for u in p.get("underlines", []) if u["id"] != underline_id]))["underlines"]
+
+
 @app.put("/api/papers/{paper_id}/edits")
 def edit_highlights(paper_id: str, edits: dict = Body(...)):
     """{sentence_id: category | null | "reset"}. null clears a highlight;

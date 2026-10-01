@@ -13,7 +13,7 @@ import time
 from .export import filename as pdf_filename
 from .highlight import CATEGORIES
 
-PARTS = ("summary", "highlights", "notes", "questions", "cards", "chat")
+PARTS = ("summary", "highlights", "underlines", "notes", "questions", "cards", "chat")
 CAT_NAMES = {c: c.capitalize() for c in CATEGORIES}
 STATUS = {"answered": "Answered", "partly answered": "Partly answered", "open": "Open"}
 
@@ -140,6 +140,16 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
                         for n in notes_by_sid.get(sid, []):
                             out.append(f"  - My note: {n['text']}")
                 out.append("")
+
+    if "underlines" in parts and paper.get("underlines"):
+        order = {sid: i for i, sid in enumerate(S)}
+        out += ["## Underlined", ""]
+        for u in sorted(paper["underlines"], key=lambda u: (order.get(u["sid"], 0), u["a"])):
+            s_ = S.get(u["sid"])
+            if s_:
+                page = _page(paper, u["sid"])
+                out.append(f"- {s_['text'][u['a']:u['b']]}" + (f" (p. {page})" if page else ""))
+        out.append("")
 
     if "notes" in parts:
         loose = notes_by_sid.get(None, [])

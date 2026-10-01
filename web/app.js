@@ -263,30 +263,70 @@ function el(tag, cls, text) {
 }
 
 // Sentence text with citations (<span class="cite">), figure/table mentions
-// (<span class="xref">) and the paper's own bold/italic text (<strong>/<em>). data-refs
-// on a cite/xref lists the linked block ids. Marks may overlap bold ranges, so
-// the text is cut at every boundary and each piece wrapped as needed.
-function sentenceContent(span, s) {
+// (<span class="xref">), the paper's own bold/italic/subscript/superscript
+// text, and the reader's underlines (<span class="ul">). data-refs on a
+// cite/xref lists the linked block ids. Ranges may overlap, so the text is cut
+// at every boundary and each piece wrapped as needed.
+//
+// Math the PDF's text layer garbles is tidied for display only (the stored
+// text, and every character offset into it, stay as they are): "↦→" (a
+// maps-to arrow extracted as two glyphs) shows as "↦", and a detached hat
+// "ˆa" as "â". Each displayed text node remembers the stretch of the original
+// text it stands for (textRange), so selections map back to offsets.
+const DISPLAY_FIXES = [
+  [/↦\s*→/g, () => "↦"],
+  [/ˆ\s?([A-Za-z])/g, (m, ch) => ch + "̂"],
+  [/˜\s?([A-Za-z])/g, (m, ch) => ch + "̃"],
+];
+const textRange = new WeakMap(); // text node -> [start, end) in the sentence's text
+
+function displayFixes(text) {
+  const out = [];
+  for (const [re, fn] of DISPLAY_FIXES) {
+    for (const m of text.matchAll(re)) out.push({ a: m.index, b: m.index + m[0].length, text: fn(...m) });
+  }
+  return out.sort((x, y) => x.a - y.a).filter((f, i, all) => i === 0 || f.a >= all[i - 1].b);
+}
+
+function sentenceContent(span, s, sid) {
   const marks = [
     ...(s.cites || []).map(([a, b, refs]) => ({ a, b, refs, cls: "cite" })),
     ...(s.xrefs || []).map(([a, b, refs]) => ({ a, b, refs, cls: "xref" })),
   ].sort((x, y) => x.a - y.a);
-  const bold = s.bold || [], italic = s.italic || [];
+  const bold = s.bold || [], italic = s.italic || [], sub = s.sub || [], sup = s.sup || [];
+  const lines = (current?.underlines || []).filter((u) => u.sid === sid);
+  const fixes = displayFixes(s.text);
   const cuts = new Set([0, s.text.length]);
   for (const m of marks) cuts.add(m.a).add(m.b);
-  for (const [a, b] of [...bold, ...italic]) cuts.add(a).add(b);
-  const points = [...cuts].sort((x, y) => x - y);
+  for (const [a, b] of [...bold, ...italic, ...sub, ...sup]) cuts.add(a).add(b);
+  for (const u of lines) cuts.add(u.a).add(u.b);
+  for (const f of fixes) cuts.add(f.a).add(f.b);
+  const points = [...cuts].filter((x) => x >= 0 && x <= s.text.length).sort((x, y) => x - y);
 
   let open = null; // current cite/xref element being filled
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i], b = points[i + 1];
-    const piece = s.text.slice(a, b);
+    if (a === b) continue;
+    let piece = s.text.slice(a, b);
+    let range = [a, b];
+    const fix = fixes.find((f) => f.a <= a && b <= f.b);
+    if (fix) { // the first piece of a fixed stretch shows the fix; the rest show nothing
+      if (a !== fix.a) continue;
+      piece = fix.text;
+      range = [fix.a, fix.b];
+    }
     if (!piece) continue;
     const mark = marks.find((m) => m.a <= a && b <= m.b);
     const within = (ranges) => ranges.some(([x, y]) => x <= a && b <= y);
-    let node = document.createTextNode(piece);
+    const text = document.createTextNode(piece);
+    textRange.set(text, range);
+    let node = text;
+    if (within(sub)) { const e = el("sub"); e.append(node); node = e; }
+    else if (within(sup)) { const e = el("sup"); e.append(node); node = e; }
     if (within(italic)) { const em = el("em"); em.append(node); node = em; }
     if (within(bold)) { const st = el("strong"); st.append(node); node = st; }
+    const ul = lines.find((u) => u.a <= a && b <= u.b);
+    if (ul) { const u = el("span", "ul"); u.dataset.ul = ul.id; u.append(node); node = u; }
     if (mark) {
       if (!open || open._mark !== mark) {
         open = el("span", mark.cls);
@@ -306,13 +346,36 @@ function sentenceSpans(parent, ids, paper) {
   ids.forEach((sid, i) => {
     const s = paper.sentences[sid];
     const span = el("span", "s");
-    sentenceContent(span, s);
+    sentenceContent(span, s, sid);
     span.dataset.sid = sid;
     if (s.coverage < 0.8) span.dataset.cov = "low";
     parent.append(span);
     if (i < ids.length - 1) parent.append(" ");
   });
   return parent;
+}
+
+// Redraw one sentence's text (after its underlines change).
+function redrawSentence(sid) {
+  const span = $("paper").querySelector(`.s[data-sid="${sid}"]`);
+  if (!span) return;
+  span.replaceChildren();
+  sentenceContent(span, current.sentences[sid], sid);
+}
+
+// A DOM position inside a sentence -> character offset in its stored text.
+function sentenceOffset(span, node, offset) {
+  if (node.nodeType === 3 && textRange.has(node)) {
+    const [a, b] = textRange.get(node);
+    return node.data.length === b - a ? a + offset : offset === 0 ? a : b; // a tidied stretch counts as a whole
+  }
+  // Between elements: the start of the first text at or after the position.
+  const point = document.createRange();
+  point.setStart(node, offset);
+  const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+  let t;
+  while ((t = walker.nextNode())) if (point.comparePoint(t, 0) >= 0) return textRange.get(t)?.[0] ?? 0;
+  return current.sentences[span.dataset.sid].text.length;
 }
 
 // Crops keep their size on the page, scaled to the reading font (papers set body text at ~10pt).
@@ -561,7 +624,7 @@ $("settings-toggle").addEventListener("click", refreshAiStatus);
 const picker = $("picker");
 let pickingSpan = null;
 
-function openPicker(span, x, y) {
+function openPicker(span, x, y, ulId) {
   closePicker();
   pickingSpan = span;
   span.classList.add("picking");
@@ -601,6 +664,14 @@ function openPicker(span, x, y) {
   card.addEventListener("click", () => { closePicker(); newCardFrom(sid); });
   const aiNote = span.dataset.hl && current.ai_labels?.[sid]?.note;
   if (aiNote) picker.append(el("p", "picker-note", aiNote));
+  if (ulId) {
+    const rm = el("button", "picker-explain");
+    rm.type = "button";
+    rm.setAttribute("role", "menuitem");
+    rm.append("Remove underline");
+    rm.addEventListener("click", () => { closePicker(); removeUnderline(ulId); });
+    picker.append(rm);
+  }
   picker.append(ex, tr, note, card, el("hr"));
   for (const [cat, label] of CATEGORIES) item(label, cat, cat);
   item("No highlight", null);
@@ -646,10 +717,50 @@ $("paper").addEventListener("click", (e) => {
   if (e.target.closest(".cite, .xref")) return;
   if (String(window.getSelection())) return; // selecting text, not picking
   const span = e.target.closest(".s");
-  if (span) { e.stopPropagation(); pickingSpan === span ? closePicker() : openPicker(span, e.clientX, e.clientY); }
+  if (span) { e.stopPropagation(); pickingSpan === span ? closePicker() : openPicker(span, e.clientX, e.clientY, e.target.closest(".ul")?.dataset.ul); }
 });
 document.addEventListener("click", (e) => { if (!e.target.closest("#picker, .s")) closePicker(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePicker(); });
+
+// ---------- Underlines ----------
+// Select words or sentences, then the underline button under the selection.
+// Stored per sentence as character ranges (a selection over several sentences
+// becomes one range in each); tap an underline to remove it.
+async function underlineRange(range) {
+  const ranges = [];
+  for (const span of $("paper").querySelectorAll(".s")) {
+    if (!range.intersectsNode(span)) continue;
+    const sid = span.dataset.sid;
+    const len = current.sentences[sid].text.length;
+    const a = span.contains(range.startContainer) ? sentenceOffset(span, range.startContainer, range.startOffset) : 0;
+    const b = span.contains(range.endContainer) ? sentenceOffset(span, range.endContainer, range.endOffset) : len;
+    // Trim spaces so the line starts and ends on a character.
+    const text = current.sentences[sid].text;
+    let x = a, y = b;
+    while (x < y && /\s/.test(text[x])) x++;
+    while (y > x && /\s/.test(text[y - 1])) y--;
+    if (x < y) ranges.push({ sid, a: x, b: y });
+  }
+  if (!ranges.length) return;
+  window.getSelection().removeAllRanges();
+  try {
+    current.underlines = await api(`/api/papers/${current.id}/underlines`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ranges }),
+    });
+  } catch (err) { alert(`Could not underline: ${err.message || err}`); return; }
+  for (const sid of new Set(ranges.map((r) => r.sid))) redrawSentence(sid);
+  applyHighlights();
+}
+
+async function removeUnderline(id) {
+  const u = (current.underlines || []).find((x) => x.id === id);
+  if (!u) return;
+  try {
+    current.underlines = await api(`/api/papers/${current.id}/underlines/${id}`, { method: "DELETE" });
+  } catch (err) { alert(`Could not remove it: ${err.message || err}`); return; }
+  redrawSentence(u.sid);
+  applyHighlights();
+}
 
 // ---------- Notes ----------
 // Note paper lines must be whole screen pixels to render evenly under display
@@ -1127,8 +1238,8 @@ function buildFloats(paper) {
       label: m ? `${{ table: "Table", listing: "Listing" }[kind] || "Figure"} ${m[2]}` : null,
       caption: m ? caption.slice(m[0].length).replace(/^[\s.:|—–-]+/, "") : caption,
     };
+    if (b.region === "appendix") continue; // the outline lists the main text's figures and tables
     if (!m) groups.other.push(item);
-    else if (b.region === "appendix") groups.appendix.push(item);
     else groups[kind].push(item);
   }
   const paperEl = $("paper");
@@ -1251,8 +1362,10 @@ hoverTools.append(explainBtn, translateBtn);
 hoverTools.hidden = true;
 document.body.append(hoverTools);
 const selTools = el("div", "hover-tools sel-tools");
+const ICON_UNDERLINE = `<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M7 4v7a5 5 0 0 0 10 0V4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 20h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+const selUnderlineBtn = iconButton("explain-btn underline-btn", "Underline selection", ICON_UNDERLINE);
 const selTranslateBtn = iconButton("explain-btn translate-btn", "Translate selection", ICON_TRANSLATE);
-selTools.append(selTranslateBtn);
+selTools.append(selUnderlineBtn, selTranslateBtn);
 selTools.hidden = true;
 document.body.append(selTools);
 const explainPop = el("div", "explain-pop");
@@ -1330,7 +1443,7 @@ function selectionInPaper() {
   // The sentences the selection touches, so a single word is translated in context.
   const sentences = [...paper.querySelectorAll(".s")].filter((s) => range.intersectsNode(s));
   const context = sentences.slice(0, 3).map((s) => current.sentences[s.dataset.sid]?.text || s.textContent).join(" ");
-  return { text, context, rects };
+  return { text, context, rects, range: range.cloneRange() };
 }
 
 function updateSelTools() {
@@ -1361,6 +1474,13 @@ document.addEventListener("selectionchange", () => {
 });
 // Keep the selection when the button is pressed.
 selTranslateBtn.addEventListener("mousedown", (e) => e.preventDefault());
+selUnderlineBtn.addEventListener("mousedown", (e) => e.preventDefault());
+selUnderlineBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!selection) return;
+  selTools.hidden = true;
+  underlineRange(selection.range);
+});
 selTranslateBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   if (!selection) return;
@@ -2065,15 +2185,23 @@ async function loadConnections() {
 }
 
 // ---------- The original PDF ----------
+let placeBeforeOriginal = null; // where the reflowed text was, to come back to
+
 function setOriginalShown(on) {
   const b = $("toggle-original");
   b.setAttribute("aria-checked", String(on));
   b.textContent = on ? "Show the reflowed text" : "Show original PDF";
   if (!current) return;
   const frame = $("original");
+  if (on && !$("paper").hidden) placeBeforeOriginal = readingPosition();
   if (on && !frame.src) frame.src = `/api/papers/${current.id}/pdf`;
   frame.hidden = !on;
   $("paper").hidden = on;
+  if (on) window.scrollTo(0, 0);
+  else if (placeBeforeOriginal) { // back to the same sentence, not the top
+    scrollToPosition(placeBeforeOriginal);
+    placeBeforeOriginal = null;
+  }
   renderNotes(); // notes belong to the reflowed view
 }
 $("toggle-original").addEventListener("click", () => {
@@ -2121,7 +2249,7 @@ async function download(r, fallback) {
 
 // ---------- Markdown export ----------
 const MD_PARTS = [
-  ["summary", "Summary"], ["highlights", "Highlights (with the AI's margin notes)"], ["notes", "My notes"],
+  ["summary", "Summary"], ["highlights", "Highlights (with the AI's margin notes)"], ["underlines", "Underlined passages"], ["notes", "My notes"],
   ["questions", "Questions and answers"], ["cards", "Flashcards"], ["chat", "Ask history"],
 ];
 for (const [v, label] of MD_PARTS) {

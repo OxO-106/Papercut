@@ -850,3 +850,8 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
 @media (hover: none) {
   html, body { touch-action: pan-x pan-y; overscroll-behavior: none; }
 }
+
+/* Underlines, sub- and superscripts */
+.paper .ul { text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
+.paper sub, .paper sup { font-size: .72em; line-height: 0; }
+.underline-btn:hover { border-color: var(--accent); color: var(--accent); }

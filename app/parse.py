@@ -947,10 +947,74 @@ def _span_style(span) -> int:
     return style
 
 
+SUB, SUP = 1, 2
+
+
+def _script_chars(page: fitz.Page) -> list[tuple[float, float, int]]:
+    """Centres of the characters on lines that have subscripts or
+    superscripts, as (x, y, 0 | SUB | SUP): characters in a span set noticeably smaller than its
+    line's main text and lowered (o_t, a_{t-1}) or raised (x^2, footnote marks)
+    relative to the line's baseline."""
+    out = []
+    for block in page.get_text("rawdict")["blocks"]:
+        for line in block.get("lines", []):
+            spans = [sp for sp in line["spans"] if sp.get("chars")]
+            if len(spans) < 2:
+                continue
+            weight: dict[float, int] = {}
+            for sp in spans:
+                weight[round(sp["size"], 1)] = weight.get(round(sp["size"], 1), 0) + len(sp["chars"])
+            main = max(weight, key=weight.get)
+            base = [sp["origin"][1] for sp in spans if abs(sp["size"] - main) < 0.3]
+            if not base:
+                continue
+            baseline = sorted(base)[len(base) // 2]
+            kinds = []
+            for sp in spans:
+                dy = sp["origin"][1] - baseline
+                small = sp["size"] <= 0.85 * main
+                kinds.append(SUB if small and dy > 0.08 * main else SUP if small and dy < -0.2 * main else 0)
+            if not any(kinds):
+                continue
+            # Every character of such a line, so words can be matched character by character.
+            for sp, kind in zip(spans, kinds):
+                for ch in sp["chars"]:
+                    if ch["c"].strip():
+                        x0, y0, x1, y1 = ch["bbox"]
+                        out.append(((x0 + x1) / 2, (y0 + y1) / 2, kind))
+    return out
+
+
+def _word_scripts(w, scripts) -> str | None:
+    """For a word, a string with one character per non-space character of its
+    text: "0" normal, "1" subscript, "2" superscript; None when nothing in it
+    is raised or lowered (or its characters can't be lined up)."""
+    x0, y0, x1, y1, text = w[0], w[1], w[2], w[3], w[4]
+    inside = sorted((cx, k) for cx, cy, k in scripts if x0 - .5 <= cx <= x1 + .5 and y0 - .5 <= cy <= y1 + .5)
+    if not any(k for _, k in inside):
+        return None
+    chars = [c for c in text if not c.isspace()]
+    if len(chars) < 2:
+        return None  # a lone small character (e.g. a footnote mark): leave it
+    if len(inside) == len(chars):  # the usual case: the PDF's own characters, in order
+        kinds = [str(k) for _, k in inside]
+    else:  # ligatures etc.: spread the characters evenly across the box
+        step = (x1 - x0) / len(chars)
+        kinds = ["0"] * len(chars)
+        for cx, k in inside:
+            if k:
+                kinds[min(len(chars) - 1, max(0, int((cx - x0) / step)))] = str(k)
+    if kinds[0] != "0":
+        return None  # the word starts small: not a base letter with a script
+    return "".join(kinds)
+
+
 def _page_words(pdf: fitz.Document) -> dict[int, list[tuple]]:
-    """Every word with its box, line and font style (BOLD | ITALIC bits)."""
+    """Every word with its box, line, font style (BOLD | ITALIC bits) and which
+    of its characters are subscripts or superscripts (see _word_scripts)."""
     pages = {}
     for pno, page in enumerate(pdf, start=1):
+        scripts = _script_chars(page)
         styled = [
             (span["bbox"], st)
             for block in page.get_text("dict")["blocks"]
@@ -964,7 +1028,7 @@ def _page_words(pdf: fitz.Document) -> dict[int, list[tuple]]:
             return next((st for b, st in styled if b[0] <= cx <= b[2] and b[1] <= cy <= b[3]), 0)
 
         pages[pno] = [
-            (pno, w[0], w[1], w[2], w[3], w[4], (w[5], w[6]), style(w))
+            (pno, w[0], w[1], w[2], w[3], w[4], (w[5], w[6]), style(w), _word_scripts(w, scripts) if scripts else None)
             for w in page.get_text("words", sort=False)
         ]
     return pages
