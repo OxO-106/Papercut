@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- iPhone: "Add to Home Screen" opens Papercut full screen, like an app -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Papercut">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Papercut</title>
   <!-- Icons: SVG for tabs (sharp at any scale); PNG sizes because Edge draws an
        app window's title-bar and taskbar icon from a bitmap, not the SVG.
@@ -24,16 +29,17 @@
         <a id="nav-library" href="#/">Library</a>
         <a id="nav-review" href="#/review">Review</a>
       </nav>
+      <span id="bar-title" class="bar-title"></span>
     </div>
     <div class="bar-actions">
       <span id="paper-actions" class="bar-actions" hidden>
-        <button id="outline-toggle" type="button" aria-expanded="false" aria-controls="outline" title="Show or hide the outline">Outline</button>
-        <button id="summary-toggle" type="button" aria-expanded="false" aria-controls="spanel" title="A one-page summary, and how this paper connects to your library">Summary</button>
-        <button id="ask-toggle" type="button" aria-expanded="false" aria-controls="chat">Ask</button>
-        <button id="questions-toggle" type="button" aria-expanded="false" aria-controls="qpanel" title="Insightful questions about the key highlights, with answers">Questions</button>
-        <button id="cards-toggle" type="button" aria-expanded="false" aria-controls="cpanel" title="Flashcards for this paper">Cards</button>
+        <button id="outline-toggle" type="button" aria-expanded="false" aria-controls="outline" title="Show or hide the outline"><svg class="tab-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Outline</span></button>
+        <button id="summary-toggle" type="button" aria-expanded="false" aria-controls="spanel" title="A one-page summary, and how this paper connects to your library"><svg class="tab-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 8h7M8.5 11.5h7M8.5 15h4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>Summary</span></button>
+        <button id="ask-toggle" type="button" aria-expanded="false" aria-controls="chat"><svg class="tab-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Ask</span></button>
+        <button id="questions-toggle" type="button" aria-expanded="false" aria-controls="qpanel" title="Insightful questions about the key highlights, with answers"><svg class="tab-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5v.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="16.9" r="1" fill="currentColor"/></svg><span>Questions</span></button>
+        <button id="cards-toggle" type="button" aria-expanded="false" aria-controls="cpanel" title="Flashcards for this paper"><svg class="tab-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="3.5" y="7" width="13" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M7.5 4.5h11a2 2 0 0 1 2 2v9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Cards</span></button>
         <span class="menu-wrap">
-          <button id="more-toggle" type="button" aria-expanded="false" aria-controls="more-menu" aria-haspopup="menu" title="More">More ▾</button>
+          <button id="more-toggle" type="button" aria-expanded="false" aria-controls="more-menu" aria-haspopup="menu" title="More"><svg class="tab-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/></svg><span>More<span class="caret"> ▾</span></span></button>
           <div id="more-menu" class="menu" role="menu" hidden>
             <button id="toggle-original" type="button" role="menuitemcheckbox" aria-checked="false">Show original PDF</button>
             <button id="export" type="button" role="menuitem" title="Download the original PDF with these highlights">Export PDF with highlights</button>
@@ -166,8 +172,9 @@
     <div class="add-row">
       <label id="drop" class="drop">
         <input id="file" type="file" accept="application/pdf" hidden>
-        <strong>Drop a PDF here</strong>
-        <span>or click to choose a file</span>
+        <strong class="drop-wide">Drop a PDF here</strong>
+        <span class="drop-wide">or click to choose a file</span>
+        <strong class="drop-touch">Add a PDF</strong>
       </label>
       <form id="link-form" class="link-form">
         <input id="link-input" type="text" inputmode="url" autocomplete="off" spellcheck="false"

@@ -22,6 +22,8 @@
   --font-size: 20px;
   --line-height: 1.6;
   --measure: 860px;
+  --bar-h: calc(49px + env(safe-area-inset-top)); /* the top bar, below the iPhone status bar */
+  --tabs-h: 0px; /* the reader's bottom tab bar (phones) */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -40,7 +42,8 @@ body { font-family: var(--font-ui); }
 .bar {
   position: sticky; top: 0; z-index: 16; /* above the side panels, so the More menu shows over them */
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-  padding: .6rem 1rem; background: var(--bar-bg); border-bottom: 1px solid var(--rule);
+  padding: calc(.6rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right)) .6rem calc(1rem + env(safe-area-inset-left));
+  background: var(--bar-bg); border-bottom: 1px solid var(--rule);
 }
 .brand { display: inline-flex; align-items: center; gap: .5rem; font-weight: 600; color: var(--fg); text-decoration: none; }
 .brand img { border-radius: 5px; }
@@ -109,7 +112,7 @@ button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
 
 /* Settings panel */
 .settings {
-  position: fixed; top: 52px; right: 12px; z-index: 20; width: min(300px, calc(100vw - 24px));
+  position: fixed; top: calc(var(--bar-h) + 3px); right: 12px; z-index: 20; width: min(300px, calc(100vw - 24px));
   display: flex; flex-direction: column; gap: .9rem; padding: 1rem;
   background: var(--bg); border: 1px solid var(--rule); border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0,0,0,.18); font-size: .9rem;
@@ -128,7 +131,7 @@ button.link { border: 0; background: none; color: var(--muted); padding: 0; alig
 /* Debug: ?debug in the URL outlines sentences that could not be located on the page */
 .debug .s[data-cov="low"] { text-decoration: underline wavy #e8590c; }
 
-.original { display: block; width: 100%; height: calc(100vh - 49px); border: 0; }
+.original { display: block; width: 100%; height: calc(100dvh - var(--bar-h) - var(--tabs-h)); border: 0; }
 
 /* Citations: muted so the eye skips them; hover or tap shows the reference. */
 .paper .cite { color: var(--muted); font-size: .92em; cursor: help; }
@@ -210,7 +213,7 @@ button.link { border: 0; background: none; color: var(--muted); padding: 0; alig
 
 /* ---------- Ask (Q&A) panel ---------- */
 .chat {
-  position: fixed; top: 49px; right: 0; bottom: 0; z-index: 15; width: min(420px, 100vw);
+  position: fixed; top: var(--bar-h); right: 0; bottom: var(--tabs-h); z-index: 15; width: min(420px, 100vw);
   display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--rule);
   box-shadow: -8px 0 24px rgba(0,0,0,.08); font-family: var(--font-ui); font-size: .92rem;
 }
@@ -351,7 +354,7 @@ button.link { border: 0; background: none; color: var(--muted); padding: 0; alig
 
 /* ---------- Outline ---------- */
 .outline {
-  position: fixed; top: 49px; left: 0; bottom: 0; z-index: 14; width: min(290px, 85vw);
+  position: fixed; top: var(--bar-h); left: 0; bottom: var(--tabs-h); z-index: 14; width: min(290px, 85vw);
   display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid var(--rule);
   font: .86rem/1.35 var(--font-ui);
 }
@@ -695,17 +698,7 @@ a.ref-act { color: var(--accent); }
   .lib-side { flex-direction: row; flex-wrap: wrap; align-items: center; }
   .lib-side .cont-bar { flex: 1 1 100%; }
 }
-/* Narrow screens: the reader toolbar scrolls sideways instead of widening the page. */
-@media (max-width: 760px) {
-  .bar { gap: .5rem; padding: .5rem .6rem; }
-  .bar-left { gap: .6rem; flex: none; }
-  .brand { font-size: 0; gap: 0; }
-  .bar-actions { min-width: 0; }
-  #paper-actions { min-width: 0; overflow-x: auto; scrollbar-width: none; }
-  #paper-actions::-webkit-scrollbar { display: none; }
-  .bar button { padding: .3rem .55rem; font-size: .85rem; }
-  .menu { position: fixed; top: 48px; right: 8px; }
-}
+
 /* Review: pick a paper */
 .rv-intro { color: var(--muted); margin: 0 0 1rem; }
 .rv-decks { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
@@ -729,3 +722,85 @@ a.ref-act { color: var(--accent); }
 .lib-col-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .lib-col-caret { color: var(--muted); font-size: .75rem; }
 .lib-col-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 1rem; }
+
+/* Tab icons and the phone title only show on phones. */
+.tab-icon, .bar-title, .drop-touch { display: none; }
+
+/* ---------- Phones (iPhone Air: 420 x 912 points) ----------
+   The reader's buttons become a bottom tab bar (thumb reach); side panels and
+   the outline fill the screen between the top bar and the tabs; inputs are
+   16px so iOS doesn't zoom in on focus; safe areas keep clear of the notch
+   and the home indicator. */
+@media (max-width: 760px) {
+  :root { --bar-h: calc(49px + env(safe-area-inset-top)); }
+  body[data-view="reader"] { --tabs-h: calc(56px + env(safe-area-inset-bottom)); }
+  .bar { gap: .6rem; padding-top: calc(.5rem + env(safe-area-inset-top)); padding-bottom: .5rem; }
+  .bar-left { gap: .7rem; min-width: 0; flex: 1; }
+  .brand { font-size: 0; gap: 0; flex: none; }
+  body[data-view="reader"] .top-nav { display: none; }
+  .top-nav { display: flex; }
+  body[data-view="reader"] .bar-title {
+    display: block; min-width: 0; font-size: .88rem; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* Bottom tab bar */
+  #paper-actions {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 17; height: var(--tabs-h);
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 0;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    background: var(--bar-bg); border-top: 1px solid var(--rule);
+  }
+  #paper-actions[hidden] { display: none; }
+  #paper-actions > button, #paper-actions .menu-wrap > button {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    width: 100%; height: 56px; padding: 0; border: 0; border-radius: 0; background: none;
+    color: var(--muted); font-size: .66rem; letter-spacing: .01em;
+  }
+  #paper-actions .menu-wrap { display: flex; }
+  #paper-actions .tab-icon { display: block; }
+  #paper-actions .caret { display: none; }
+  #paper-actions button[aria-expanded="true"] { background: none; color: var(--accent); }
+  .menu { position: fixed; top: auto; right: 8px; bottom: calc(var(--tabs-h) + 6px); min-width: 240px; }
+  .menu button { padding: .7rem .8rem; font-size: 1rem; }
+  #reader { padding-bottom: var(--tabs-h); }
+  .resume-toast { bottom: calc(var(--tabs-h) + .8rem); }
+
+  /* Panels fill the screen; their text keeps a comfortable size. */
+  .chat, .outline { width: 100vw; box-shadow: none; }
+  .chat-log { padding: 1rem calc(1rem + env(safe-area-inset-right)) 1.5rem calc(1rem + env(safe-area-inset-left)); }
+  .chat-head { padding: .7rem 1rem; }
+  .panel-close, #chat-close, #outline-close { font-size: 1.6rem; padding: 0 .4rem; }
+  input, textarea, select { font-size: 16px !important; } /* below 16px, iOS zooms in on focus */
+  .chat-form { padding-bottom: .7rem; }
+
+  /* Reading: a little less side padding; figures may use the full width. */
+  .paper { padding: 1.5rem calc(14px + env(safe-area-inset-right)) 3rem calc(14px + env(safe-area-inset-left)); }
+  .paper figure img { width: 100% !important; max-width: 100%; }
+  .explain-pop, .cite-pop { max-height: 60dvh; overflow-y: auto; }
+
+  /* Library */
+  .drop { padding: .9rem; }
+  .drop-wide { display: none; }
+  .drop-touch { display: block; }
+  .lib-head { flex-direction: column; align-items: stretch; }
+  .lib-head input { max-width: none; }
+  .lib-tools { gap: .6rem; }
+  .lib-status { width: 100%; grid-template-columns: repeat(4, 1fr); }
+  .lib-cols { flex-direction: row !important; flex-wrap: nowrap; overflow-x: auto; gap: .3rem; padding-bottom: .3rem; scrollbar-width: none; }
+  .col-btn { flex: none; border: 1px solid var(--rule); border-radius: 999px; padding: .3rem .8rem; white-space: nowrap; }
+  .col-org { flex: none; margin: 0 .3rem; white-space: nowrap; align-self: center; }
+  .lib-side { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .lib-side .cont-bar, .lib-side .lib-counts { grid-column: 1 / -1; }
+  .continue-list { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 78%; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+  .cont-card { scroll-snap-align: start; }
+
+  /* Review */
+  .review, .qview { margin-top: 1.2rem; }
+  .rv-card { padding: 1.1rem 1.1rem; }
+  .rv-front { font-size: 1.2rem; }
+  .rv-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; }
+  .rv-grade { min-width: 0; padding: .8rem .2rem; }
+  .rv-show { grid-column: 1 / -1; padding: .9rem; }
+  .rv-keys { display: none; }
+}

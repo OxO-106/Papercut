@@ -96,6 +96,8 @@ The server only listens on 127.0.0.1. To read on another device, such as a lapto
 
 `tailscale serve reset` stops sharing. The PC must stay on and awake.
 
+**iPhone:** install the Tailscale app, sign in with the same account and turn the VPN on. Open the address in **Safari**, then Share → **Add to Home Screen**. Papercut then opens full screen like an app. On a phone the reader's buttons move to a tab bar at the bottom, the panels fill the screen, and tapping a sentence opens its menu (Explain, Translate, note, highlight, flashcard). Text size and line height on a phone are set separately from the computer's.
+
 ## Library
 
 Processed papers live in `../library`, next to the project folder. There is one folder per paper, holding `original.pdf`, `paper.json` and `assets/`.

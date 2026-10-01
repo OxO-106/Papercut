@@ -6,6 +6,7 @@ let current = null; // loaded paper.json
 
 function show(view) {
   for (const v of views) $(v).hidden = v !== view;
+  document.body.dataset.view = view; // phone layout: the reader gets a bottom tab bar
   $("paper-actions").hidden = view !== "reader";
   if (view !== "reader" && openPanelName) setPanel(null);
   if (view !== "reader" && !$("outline").hidden) setOutlineOpen(false, false);
@@ -45,19 +46,31 @@ try { Object.assign(settings, JSON.parse(localStorage.getItem("settings") || "{}
 delete settings.ai; // model choice was removed: the app always uses the local model
 delete settings.density; // the density slider was removed: every highlight the AI kept is shown
 
+// Phones keep their own text size and line height (a phone reads best smaller
+// than a desktop monitor; the settings are shared through the server).
+const phone = matchMedia("(max-width: 760px)");
+const sizeKey = () => (phone.matches ? "phoneSize" : "size");
+const leadingKey = () => (phone.matches ? "phoneLeading" : "leading");
+const PHONE_DEFAULTS = { phoneSize: 18, phoneLeading: 1.6 };
+let wasPhone = phone.matches;
+const recheckPhone = () => { if (phone.matches !== wasPhone) { wasPhone = phone.matches; applySettings(); } };
+phone.addEventListener("change", recheckPhone);
+window.addEventListener("resize", recheckPhone);
+
 function applySettings() {
   const root = document.documentElement.style;
+  const size = settings[sizeKey()] ?? PHONE_DEFAULTS.phoneSize, leading = settings[leadingKey()] ?? PHONE_DEFAULTS.phoneLeading;
   root.setProperty("--font-body", FONTS[settings.font] || FONTS.libertine);
-  root.setProperty("--font-size", `${settings.size}px`);
-  root.setProperty("--line-height", settings.leading);
+  root.setProperty("--font-size", `${size}px`);
+  root.setProperty("--line-height", leading);
   root.setProperty("--measure", `${settings.width}px`);
   document.documentElement.dataset.theme = settings.theme;
 
   $("set-font").value = settings.font;
-  $("set-size").value = settings.size;
-  $("out-size").textContent = `${settings.size}px`;
-  $("set-leading").value = settings.leading;
-  $("out-leading").textContent = Number(settings.leading).toFixed(2);
+  $("set-size").value = size;
+  $("out-size").textContent = `${size}px`;
+  $("set-leading").value = leading;
+  $("out-leading").textContent = Number(leading).toFixed(2);
   $("set-width").value = settings.width;
   $("out-width").textContent = `${settings.width}px`;
   for (const b of $("set-theme").children) b.setAttribute("aria-pressed", String(b.dataset.v === settings.theme));
@@ -81,11 +94,11 @@ function updateSettings(patch) {
 $("set-font").addEventListener("change", (e) => updateSettings({ font: e.target.value }));
 for (const [v, label] of LANGS) $("set-lang").append(new Option(label, v));
 $("set-lang").addEventListener("change", (e) => updateSettings({ lang: e.target.value }));
-$("set-size").addEventListener("input", (e) => updateSettings({ size: Number(e.target.value) }));
-$("set-leading").addEventListener("input", (e) => updateSettings({ leading: Number(e.target.value) }));
+$("set-size").addEventListener("input", (e) => updateSettings({ [sizeKey()]: Number(e.target.value) }));
+$("set-leading").addEventListener("input", (e) => updateSettings({ [leadingKey()]: Number(e.target.value) }));
 $("set-width").addEventListener("input", (e) => updateSettings({ width: Number(e.target.value) }));
 $("set-theme").addEventListener("click", (e) => { if (e.target.dataset.v) updateSettings({ theme: e.target.dataset.v }); });
-$("set-reset").addEventListener("click", () => updateSettings({ ...DEFAULTS }));
+$("set-reset").addEventListener("click", () => updateSettings({ ...DEFAULTS, ...PHONE_DEFAULTS }));
 for (const [cat, label] of CATEGORIES) {
   const b = el("button");
   b.type = "button";
@@ -217,6 +230,7 @@ async function openPaper(id, sid) {
   current = paper;
   current.links = {}; // reference block -> library paper (loadConnections)
   document.title = paper.meta.title;
+  $("bar-title").textContent = paper.meta.title;
   $("original").hidden = true;
   $("original").removeAttribute("src");
   $("paper").hidden = false;
@@ -1272,7 +1286,9 @@ function showHoverTools(span) {
   hoverTools.style.top = `${window.scrollY + last.top + (last.height - hoverTools.offsetHeight) / 2}px`;
 }
 
+const canHover = matchMedia("(hover: hover)").matches;
 $("paper").addEventListener("mouseover", (e) => {
+  if (!canHover) return; // touch: taps open the sentence menu instead
   const span = e.target.closest?.(".s");
   if (!span || span === hoverSpan || !picker.hidden) return;
   clearTimeout(hoverTimer);
