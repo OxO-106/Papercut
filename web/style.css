@@ -53,7 +53,7 @@ button:hover { border-color: var(--muted); }
 button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
 
 /* Home */
-.home { max-width: 72rem; margin: 2rem auto 4rem; padding: 0 16px; }
+.home { max-width: 96rem; margin: 2rem auto 4rem; padding: 0 16px; }
 .drop {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .3rem;
   padding: 1.4rem 1rem; border: 2px dashed var(--rule); border-radius: 12px; cursor: pointer; color: var(--muted);
@@ -549,7 +549,7 @@ button:disabled { opacity: .55; cursor: default; }
   font: inherit; font-size: .82rem; padding: .25rem .4rem; border-radius: 6px; border: 1px solid var(--rule);
   background: var(--bg); color: var(--fg); max-width: 100%;
 }
-.lib-body { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.lib-body { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 1.5rem; align-items: start; }
 @media (max-width: 760px) { .lib-body { grid-template-columns: 1fr; } .lib-cols { flex-direction: row !important; flex-wrap: wrap; } }
 .lib-cols { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 64px; }
 .col-btn {
@@ -717,7 +717,7 @@ a.ref-act { color: var(--accent); }
 .rv-back-link { flex: none; font-size: .82rem; color: var(--accent); }
 .rv-done .rv-actions { margin-top: 1rem; }
 /* Library row: the collection, in full */
-.lib-row { grid-template-columns: minmax(0, 1fr) 13rem; }
+.lib-row { grid-template-columns: minmax(0, 1fr) 15rem; }
 @media (max-width: 760px) { .lib-row { grid-template-columns: 1fr; } }
 .lib-col {
   position: relative; display: flex; align-items: flex-start; gap: .4rem; padding: .3rem .5rem;
