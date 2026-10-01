@@ -381,7 +381,7 @@ def _decks(paper_id: str | None = None) -> list[dict]:
 
 @app.get("/api/review")
 def review_queue(paper: str | None = None):
-    """Cards due now (and up to 20 new ones), oldest due first."""
+    """Cards due now (and new ones, at most 20 a day), oldest due first."""
     if paper:
         _existing(paper)
     return cards.due(_decks(paper))

@@ -135,6 +135,7 @@ def schedule(state: dict | None, grade: str, now: float | None = None) -> dict:
         ease = max(1.3, ease + {"hard": -0.15, "good": 0.0, "easy": 0.15}[grade])
         s.update(ease=round(ease, 2), interval=round(interval, 2), reps=reps + 1, due=now + interval * DAY)
     s["last"] = now
+    s.setdefault("first", now)  # when the card was first seen (the daily limit on new cards)
     return s
 
 
@@ -164,13 +165,17 @@ def forget(paper_id: str, cid: str | None = None) -> None:
         _save_reviews(r)
 
 
+NEW_PER_DAY = 20
+
+
 def due(papers: list[dict], limit: int = 200) -> dict:
     """Cards due now across the given papers (each {"id", "title", "cards"}):
     cards seen before whose due time has passed, then new cards (at most 20
-    new per session, so a fresh library isn't a wall). Returns the queue and
-    counts."""
+    new a day, so a fresh library isn't a wall). Returns the queue and counts."""
     now = time.time()
     r = load_reviews()
+    midnight = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+    started_today = sum(1 for st in r.values() if st.get("first", 0) >= midnight)
     old, new, total, next_due = [], [], 0, None
     for p in papers:
         for c in p["cards"]:
@@ -184,5 +189,5 @@ def due(papers: list[dict], limit: int = 200) -> dict:
             else:
                 next_due = min(next_due or math.inf, st["due"])
     old.sort(key=lambda c: c["state"]["due"])
-    queue = (old + new[:20])[:limit]
+    queue = (old + new[:max(0, NEW_PER_DAY - started_today)])[:limit]
     return {"queue": queue, "due": len(old), "new": len(new), "total": total, "next_due": next_due}

@@ -2190,7 +2190,7 @@ function renderSummary(s, st) {
     renderConnections();
     return;
   }
-  const meta = [s.authors, [s.venue, s.year].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+  const meta = [s.authors, venueYear(s.venue, s.year)].filter(Boolean).join(" · ");
   if (meta) box.append(el("p", "s-meta", meta));
   if (s.topics?.length) {
     const t = el("div", "s-topics");
@@ -2373,7 +2373,7 @@ function flashcard(c) {
 
 // ---------- Review ----------
 // Spaced repetition across the library (or one paper): due cards first, then
-// up to 20 new ones. Space shows the answer; 1-4 grade it.
+// new ones (at most 20 a day). Space shows the answer; 1-4 grade it.
 const GRADES = [["again", "Again"], ["hard", "Hard"], ["good", "Good"], ["easy", "Easy"]];
 let rv = null;
 
@@ -2610,13 +2610,18 @@ function renderLibrary() {
   else if (!shown.length) list.append(el("p", "lib-empty", libView.q ? "No titles, authors or topics match. Matches inside your papers are below." : "No papers here."));
 }
 
+// "NeurIPS 2017", not "NeurIPS 2017 2017" when the venue already has the year.
+function venueYear(venue, year) {
+  return venue && year && venue.includes(year) ? venue : [venue, year].filter(Boolean).join(" ");
+}
+
 function libRow(p) {
   const row = el("article", "lib-row");
   const main = el("div", "lib-row-main");
   const a = el("a", "lib-title", p.title);
   a.href = `#/paper/${p.id}`;
   main.append(a);
-  const meta = [p.authors, [p.venue, p.year].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+  const meta = [p.authors, venueYear(p.venue, p.year)].filter(Boolean).join(" · ");
   if (meta) main.append(el("div", "lib-meta", meta));
   if (p.processing) main.append(el("div", "lib-meta", "Processing…"));
   if (p.tldr) main.append(el("p", "lib-tldr", p.tldr));

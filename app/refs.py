@@ -3,15 +3,19 @@
 A reference entry is free text ("Yao, S., ... ReAct: Synergizing reasoning and
 acting in language models. ICLR 2023."). To find the paper:
   1. an arXiv id or DOI written in the entry;
-  2. otherwise Crossref's bibliographic search and OpenAlex's search, each
+  2. otherwise the title, guessed from the entry's sentences: an exact arXiv
+     title match with the same first author, or an OpenAlex work with exactly
+     that title;
+  3. failing that, Crossref's bibliographic search and OpenAlex's search, each
      given the whole entry; a candidate counts only if its title appears in
      the entry (so a near-miss never adds the wrong paper);
-  3. the match's arXiv copy if there is one (most ML papers), else an open-
+  4. the match's arXiv copy if there is one (most ML papers), else an open-
      access PDF via its DOI.
 Then the usual download and ingest, as for a pasted link.
 """
 
 import re
+from difflib import SequenceMatcher
 
 import httpx
 
@@ -58,8 +62,12 @@ def _openalex(entry: str) -> list[dict]:
         r.raise_for_status()
     except httpx.HTTPError:
         return []
+    return _openalex_results(r.json())
+
+
+def _openalex_results(data: dict) -> list[dict]:
     out = []
-    for w in r.json().get("results", []):
+    for w in data.get("results", []):
         arxiv = None
         for loc in w.get("locations") or []:
             m = fetch._ARXIV_URL.search((loc.get("landing_page_url") or "") + " " + (loc.get("pdf_url") or ""))
@@ -73,6 +81,70 @@ def _openalex(entry: str) -> list[dict]:
     return out
 
 
+def _title_guesses(entry: str) -> list[str]:
+    """Likely titles in a reference entry. Entries are mostly "Authors. Title.
+    Venue, year." Sentences end after a lowercase letter, digit or "?" (not
+    after an initial like "C."); the first sentence is the authors."""
+    parts = re.split(r"(?<=[a-z0-9)\]])\.\s+|(?<=[?!])\s+", entry.strip())
+    out = []
+    for p in parts[1:]:
+        p = re.sub(r"[,.]?\s*\(?(19|20)\d{2}[a-z]?\)?\.?$", "", p.strip()).strip(" .,")
+        if len(p.split()) >= 2 and not re.match(r"(In|Proceedings|Advances|arXiv|CoRR|URL|https?:)\b", p, re.I):
+            out.append(p)
+    return out[:3]
+
+
+def _same_title(title: str, guess: str, their_author: str, our_author: str) -> bool:
+    """Exactly the same title, ignoring case, spaces and punctuation
+    ("auto-completion" = "autocompletion"); or nearly the same ("model" vs
+    "models") by the same first author."""
+    a, b = re.sub(r"[^a-z0-9]", "", title.lower()), re.sub(r"[^a-z0-9]", "", guess.lower())
+    if a == b:
+        return True
+    surname = _norm(our_author)
+    return bool(surname) and _norm(their_author).endswith(surname) and SequenceMatcher(None, a, b).ratio() >= 0.9
+
+
+def _first_author(entry: str) -> str:
+    """The first author's surname-ish last word ("Sainbayar Sukhbaatar, ..." -> "Sukhbaatar")."""
+    first = re.split(r",|\s+and\s+|(?<=[a-z]{2})\.\s", entry, maxsplit=1)[0]  # not at an initial ("T. Liu")
+    words = re.findall(r"[A-Za-zÀ-ž'\-]{2,}", first)
+    return words[-1] if words else ""
+
+
+def _openalex_title(title: str) -> list[dict]:
+    try:
+        r = httpx.get("https://api.openalex.org/works", headers=HEADERS, timeout=TIMEOUT,
+                      params={"filter": f"title.search:{_norm(title)}", "per_page": 5,
+                              "select": "id,display_name,doi,authorships,locations"})
+        r.raise_for_status()
+    except httpx.HTTPError:
+        return []
+    return _openalex_results(r.json())
+
+
+def _by_title(entry: str) -> tuple[dict, str] | None:
+    """Find the paper by its title: an exact arXiv title match with the same
+    first author, else an OpenAlex work whose title is the guessed title."""
+    author = _first_author(entry)
+    for guess in _title_guesses(entry):
+        pdf = fetch._arxiv_by_title(guess, author) if author else None
+        if pdf:
+            return fetch._arxiv(re.sub(r"v\d+$", "", pdf.rsplit("/", 1)[-1])), guess
+        # An arXiv copy is the most reliable download.
+        for c in sorted(_openalex_title(guess), key=lambda c: not c.get("arxiv")):
+            if _same_title(c["title"], guess, c.get("first_author", ""), author):
+                if c.get("arxiv"):
+                    return fetch._arxiv(c["arxiv"]), c["title"]
+                if c.get("doi"):
+                    try:
+                        return fetch.resolve(c["doi"]), c["title"]
+                    except fetch.FetchError:
+                        raise fetch.FetchError(f"Found “{c['title']}”, but no free PDF of it. "
+                                               "Download it yourself and drop it on the home page.")
+    return None
+
+
 def resolve(entry: str) -> tuple[dict, str | None]:
     """Where to download the cited paper: (fetch.resolve-style info, title).
     Raises fetch.FetchError with a message the reader can act on."""
@@ -83,6 +155,9 @@ def resolve(entry: str) -> tuple[dict, str | None]:
     if d:
         return fetch.resolve(d.group(1)), None
 
+    found = _by_title(entry)
+    if found:
+        return found
     candidates = [c for c in _openalex(entry) + _crossref(entry) if c["title"] and _title_matches(c["title"], entry)]
     if not candidates:
         raise fetch.FetchError("Couldn't identify this reference in OpenAlex or Crossref. "

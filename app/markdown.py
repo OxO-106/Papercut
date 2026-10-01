@@ -78,7 +78,9 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
     s = paper.get("summary") or {}
     src = paper.get("source") or {}
     out = [f"# {paper['meta']['title']}", ""]
-    byline = " · ".join(x for x in (s.get("authors"), " ".join(x for x in (s.get("venue"), s.get("year")) if x)) if x)
+    venue, year = s.get("venue", ""), s.get("year", "")
+    when = venue if venue and year and year in venue else " ".join(x for x in (venue, year) if x)
+    byline = " · ".join(x for x in (s.get("authors"), when) if x)
     if byline:
         out += [f"*{byline}*", ""]
     link = src.get("url") or (f"https://arxiv.org/abs/{src['arxiv']}" if src.get("arxiv") else None) \

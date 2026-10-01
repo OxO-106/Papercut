@@ -150,3 +150,31 @@ def test_shelf_validation(tmp_path, monkeypatch):
         catalog.update_shelf("p1", {"status": "someday"})
     assert catalog.update_shelf("p1", {"status": None, "tags": []}) == {}
     assert catalog.load_shelf() == {}
+
+
+def test_new_cards_are_limited_per_day(monkeypatch):
+    now = 100 * DAY
+    monkeypatch.setattr(cards.time, "time", lambda: now)
+    seen = {f"p:{i}": {"due": now + DAY, "first": now - 60, "interval": 1, "ease": 2.5, "reps": 1, "lapses": 0}
+            for i in range(15)}  # 15 new cards started earlier today
+    monkeypatch.setattr(cards, "load_reviews", lambda: seen)
+    deck = [{"id": str(i), "front": str(i), "back": "b"} for i in range(40)]
+    assert len(cards.due([{"id": "p", "title": "T", "cards": deck}])["queue"]) == 5
+
+
+def test_title_guess_and_first_author():
+    e = ("Sainbayar Sukhbaatar, Arthur Szlam, Jason Weston, and Rob Fergus. End-to-end memory networks. "
+         "In Advances in Neural Information Processing Systems 28, 2015.")
+    assert refs._title_guesses(e)[0] == "End-to-end memory networks"
+    assert refs._first_author(e) == "Sukhbaatar"
+    assert refs._first_author("T. Liu, C. Xu, and J. McAuley. Repobench: x. 2024.") == "Liu"
+    assert refs._title_guesses("Ł. Kaiser and S. Bengio. Can active memory replace attention? In NIPS, 2016.")[0] \
+        == "Can active memory replace attention?"
+
+
+def test_near_identical_titles_need_the_same_author():
+    assert refs._same_title("RepoBench: Auto-Completion", "Repobench: autocompletion", "", "")
+    assert refs._same_title("Software Testing with Large Language Models", "Software testing with large language model",
+                            "Junjie Wang", "Wang")
+    assert not refs._same_title("Software Testing with Large Language Models", "Software testing with large language model",
+                                "Someone Else", "Wang")
