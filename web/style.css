@@ -53,7 +53,8 @@ button:hover { border-color: var(--muted); }
 button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
 
 /* Home */
-.home { max-width: 96rem; margin: 2rem auto 4rem; padding: 0 16px; }
+.home { width: 70vw; margin: 2rem auto 4rem; padding: 0; } /* ~15% margin on each side, on any screen */
+@media (max-width: 760px) { .home { width: auto; padding: 0 16px; } } /* phones: the full width */
 .drop {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .3rem;
   padding: 1.4rem 1rem; border: 2px dashed var(--rule); border-radius: 12px; cursor: pointer; color: var(--muted);
