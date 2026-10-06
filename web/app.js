@@ -8,6 +8,8 @@ function show(view) {
   for (const v of views) $(v).hidden = v !== view;
   document.body.dataset.view = view; // phone layout: the reader gets a bottom tab bar
   $("paper-actions").hidden = view !== "reader";
+  $("find-toggle").hidden = view !== "reader";
+  if (view !== "reader") closeFind();
   if (view !== "reader" && openPanelName) setPanel(null);
   if (view !== "reader" && !$("outline").hidden) setOutlineOpen(false, false);
   closeMenu();
@@ -390,7 +392,7 @@ function sentenceContent(span, s, sid) {
     ...(s.xrefs || []).map(([a, b, refs]) => ({ a, b, refs, cls: "xref" })),
   ].sort((x, y) => x.a - y.a);
   const bold = s.bold || [], italic = s.italic || [], sub = s.sub || [], sup = s.sup || [], math = s.math || [];
-  const formulas = (s.formula || []).filter(([, , fid]) => current?.formulas?.[fid]);
+  const formulas = (s.formula || []).filter(([, , fid]) => current?.formulas?.[fid]?.mathml);
   const lines = (current?.underlines || []).filter((u) => u.sid === sid);
   const fixes = displayFixes(s.text);
   const cuts = new Set([0, s.text.length]);
@@ -418,12 +420,18 @@ function sentenceContent(span, s, sid) {
     const mark = marks.find((m) => m.a <= a && b <= m.b);
     const within = (ranges) => ranges.some(([x, y]) => x <= a && b <= y);
     let node;
-    if (formula) { // the first piece of a formula shows its crop; the rest show nothing
+    if (formula) { // the first piece of a formula shows it whole; the rest show nothing
       if (a !== formula[0]) continue;
-      node = formulaImg(formula, s.text);
+      node = formulaMath(formula, s.text);
     } else if (fix?.math) node = mathLetter(piece, range, fix);
     else if (within(math)) node = mathText(piece, range, !!fix);
     else {
+      // The text layer leaves a space between a formula and the punctuation after it ("aᵢ ,").
+      const gap = formulas.some(([, y]) => y === a) && !fix ? piece.match(/^\s+(?=[,.;:)\]])/) : null;
+      if (gap) {
+        piece = piece.slice(gap[0].length);
+        range = [a + gap[0].length, b];
+      }
       node = document.createTextNode(piece);
       textRange.set(node, range);
     }
@@ -449,18 +457,18 @@ function sentenceContent(span, s, sid) {
 }
 
 // An inline formula the PDF's text can't carry (stacked scripts, fractions,
-// accents), as a crop of the PDF set on the text's baseline. The text stays
-// as its alt text, for copying and screen readers.
-function formulaImg([a, b, fid], text) {
+// accents), typeset from the server's MathML in the math font. The stored
+// text stays as its label, for screen readers; a selection inside it counts
+// from the formula's start or end.
+function formulaMath([a, b, fid], text) {
   const f = current.formulas[fid];
-  const img = el("img", "inl-math");
-  img.src = `/api/papers/${current.id}/${f.image}`;
-  img.alt = text.slice(a, b);
-  img.style.height = `${f.h}em`;
-  img.style.width = `${f.w}em`;
-  img.style.verticalAlign = `${-f.d}em`;
-  img.draggable = false;
-  return img;
+  const box = el("span", "inl-math");
+  box.setAttribute("aria-label", text.slice(a, b));
+  box.innerHTML = f.mathml;
+  const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+  let t;
+  while ((t = walker.nextNode())) textRange.set(t, [a, b]);
+  return box;
 }
 
 // A math letter written as an ordinary one: italic and/or bold as in the PDF.
@@ -3207,3 +3215,162 @@ updateScrollThumb();
 for (const ev of ["gesturestart", "gesturechange", "gestureend"]) {
   document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
 }
+
+// ---------- Search in the paper ----------
+// A find bar for the reading view (the magnifier, or Ctrl/Cmd+F): every match
+// in the paper's text is marked, the current one more strongly, with a count
+// and previous / next. Matches inside the folded references or appendix count
+// too; going to one unfolds it. Matches are case-insensitive and never run
+// from one block into the next. Marks use the CSS Custom Highlight API, so the
+// page's text is left as it is.
+const find = { matches: [], i: -1, timer: null };
+const canMark = typeof Highlight === "function" && !!globalThis.CSS?.highlights;
+const FIND_LIMIT = 5000;
+
+function openFind() {
+  if (!current || $("reader").hidden) return;
+  $("find").hidden = false;
+  $("find-toggle").setAttribute("aria-expanded", "true");
+  const input = $("find-input");
+  // Start from the selected words, as browsers do.
+  const picked = String(window.getSelection()).trim();
+  if (picked && picked.length < 80 && !picked.includes("\n")) input.value = picked;
+  input.focus();
+  input.select();
+  runFind();
+  showFind(true);
+}
+
+function closeFind() {
+  if ($("find").hidden) return;
+  $("find").hidden = true;
+  $("find-toggle").setAttribute("aria-expanded", "false");
+  find.matches = [];
+  find.i = -1;
+  if (canMark) { CSS.highlights.delete("find"); CSS.highlights.delete("find-current"); }
+}
+
+// The paper's text as one string, with where each text node starts in it.
+// A line break goes between blocks, so a match never joins two of them.
+function paperText() {
+  const root = $("paper");
+  const parts = [], nodes = [];
+  let at = 0, lastBlock = null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (t) => (t.parentElement.closest("button, .notes-layer, .note-card") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  let t;
+  while ((t = walker.nextNode())) {
+    const block = t.parentElement.closest("[data-block]") || root;
+    if (block !== lastBlock && at) { parts.push("\n"); at += 1; }
+    lastBlock = block;
+    nodes.push({ node: t, start: at });
+    parts.push(t.data);
+    at += t.data.length;
+  }
+  return { text: parts.join(""), nodes };
+}
+
+function runFind() {
+  const raw = $("find-input").value.replace(/\s+/g, " ").trim();
+  find.matches = [];
+  find.i = -1;
+  if (raw) {
+    const { text, nodes } = paperText();
+    // Lowercasing can change a string's length (rarely): then match the case as typed.
+    const lower = text.toLowerCase();
+    const [hay, needle] = lower.length === text.length ? [lower, raw.toLowerCase()] : [text, raw];
+    const where = (pos) => { // offset in the text -> [text node, offset in it]
+      let lo = 0, hi = nodes.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (nodes[mid].start <= pos) lo = mid; else hi = mid - 1;
+      }
+      return [nodes[lo].node, Math.min(pos - nodes[lo].start, nodes[lo].node.data.length)];
+    };
+    for (let pos = hay.indexOf(needle); pos !== -1 && find.matches.length < FIND_LIMIT; pos = hay.indexOf(needle, pos + needle.length)) {
+      const r = document.createRange();
+      r.setStart(...where(pos));
+      r.setEnd(...where(pos + needle.length));
+      find.matches.push(r);
+    }
+  }
+  // Start from the first match from the top of the screen down.
+  const top = headerBottom();
+  find.i = find.matches.findIndex((r) => {
+    const box = matchBox(r);
+    return box && box.bottom > top;
+  });
+  if (find.i < 0 && find.matches.length) find.i = 0;
+}
+
+// Where a match is on screen: its own box, or the bar of a folded section hiding it.
+function matchBox(range) {
+  const folded = range.startContainer.parentElement?.closest(".fold.folded");
+  if (folded) return folded.getBoundingClientRect();
+  const rects = range.getClientRects();
+  return rects.length ? rects[0] : null;
+}
+
+function showFind(scroll) {
+  const n = find.matches.length;
+  const query = $("find-input").value.trim();
+  $("find-count").textContent = !query ? "" : n ? `${find.i + 1} / ${n}${n >= FIND_LIMIT ? "+" : ""}` : "No matches";
+  $("find").classList.toggle("none", !!query && !n);
+  $("find-prev").disabled = $("find-next").disabled = n < 2;
+  const cur = find.matches[find.i];
+  if (canMark) {
+    CSS.highlights.set("find", new Highlight(...find.matches));
+    if (cur) CSS.highlights.set("find-current", new Highlight(cur)); else CSS.highlights.delete("find-current");
+  }
+  if (!cur || !scroll) return;
+  reveal(cur.startContainer.parentElement);
+  const box = cur.getClientRects()[0] || cur.getBoundingClientRect();
+  // Scroll only when the match is out of comfortable view; then put it a third of the way down.
+  if (box.top < headerBottom() + 40 || box.bottom > window.innerHeight - 80) {
+    window.scrollTo(0, window.scrollY + box.top - window.innerHeight * 0.35);
+  }
+  if (!canMark) { // no highlight API: select the match instead
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(cur);
+  }
+}
+
+function stepFind(by) {
+  if (!find.matches.length) return;
+  find.i = (find.i + by + find.matches.length) % find.matches.length;
+  showFind(true);
+}
+
+$("find-toggle").addEventListener("click", () => ($("find").hidden ? openFind() : closeFind()));
+$("find-close").addEventListener("click", closeFind);
+$("find-next").addEventListener("click", () => stepFind(1));
+$("find-prev").addEventListener("click", () => stepFind(-1));
+$("find-input").addEventListener("input", () => {
+  clearTimeout(find.timer);
+  find.timer = setTimeout(() => { find.timer = null; runFind(); showFind(true); }, 150);
+});
+$("find-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (find.timer) { // typed and pressed Enter at once: search first, then go to the match
+      clearTimeout(find.timer);
+      find.timer = null;
+      runFind();
+      showFind(true);
+    } else stepFind(e.shiftKey ? -1 : 1);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeFind();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "f" && current && !$("reader").hidden) {
+    e.preventDefault(); // the paper's own search, which also looks inside the folded sections
+    openFind();
+  } else if (e.key === "F3" && !$("find").hidden) {
+    e.preventDefault();
+    stepFind(e.shiftKey ? -1 : 1);
+  }
+});

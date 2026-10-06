@@ -11,7 +11,8 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
   - an outline sidebar;
   - a Figures & tables tab;
   - folded References and Appendix sections;
-  - a remembered reading position.
+  - a remembered reading position;
+  - search within the paper (Ctrl+F), including the folded sections.
 - **AI highlights:** the model reads the whole paper, takes notes, and highlights the sentences that matter. Colours show each sentence's role: objective, novelty, method, result, limitation or definition. Hover a highlight to see its margin note.
 - **Explain and Translate:** hover any sentence, or select any text, to get an explanation or a translation. Figures and tables have their own Explain button; the model reads the image.
 - **Ask:** chat about the paper, with answers grounded in its passages. It can optionally search arXiv/OpenAlex for related work and the web for background concepts.

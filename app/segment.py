@@ -228,6 +228,11 @@ def _math_ranges(sentence: str, chars: list[int]) -> list[list[int]]:
 _FORMULA_EDGE = set("\ufffd˜ˆ¯˙¨ˇ⌊⌋⌈⌉")
 
 
+# Big operators the PDF spells with a glyph of no Unicode ("Q" for ∏), which
+# the text can't match to the crop that shows them.
+_FORMULA_OPERATORS = set("∏∑∫∮√")
+
+
 def _formula_ranges(sentence: str, chars: list[tuple[int, str]], plain: set[int] = frozenset()) -> list[list]:
     """[start, end, formula id] for each inline formula shown as a crop: from
     its first to its last character found in the text, widened over the
@@ -266,7 +271,7 @@ def _formula_ranges(sentence: str, chars: list[tuple[int, str]], plain: set[int]
                 a -= 3
             else:
                 break
-        while a > 0 and sentence[a - 1] in _FORMULA_EDGE:
+        while a > 0 and (sentence[a - 1] in _FORMULA_EDGE or sentence[a - 1] in _FORMULA_OPERATORS and (a - 1) not in plain):
             a -= 1
         ta, tb = token(b - 1, b)
         if tb - ta <= 4 or all(loose(i) for i in range(b, tb)):

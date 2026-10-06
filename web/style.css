@@ -20,6 +20,7 @@
   --rule: #e4e0d8;
   --accent: #3b5bdb;
   --bar-bg: #f3f1ec;
+  --underline: #000; /* the reader's own underlines: black, as with a pen */
 
   /* Reading settings: app.js overwrites these from settings.json */
   --font-body: "Linux Libertine", Georgia, serif;
@@ -35,9 +36,10 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]):not([data-theme="sepia"]) {
     --bg: #1a1a1c; --fg: #e6e3dd; --muted: #9a958c; --rule: #33322f; --accent: #8ea4ff; --bar-bg: #232326;
+    --underline: var(--fg); /* black would vanish on the dark page */
   }
 }
-:root[data-theme="dark"] { --bg: #1a1a1c; --fg: #e6e3dd; --muted: #9a958c; --rule: #33322f; --accent: #8ea4ff; --bar-bg: #232326; }
+:root[data-theme="dark"] { --bg: #1a1a1c; --fg: #e6e3dd; --muted: #9a958c; --rule: #33322f; --accent: #8ea4ff; --bar-bg: #232326; --underline: var(--fg); }
 :root[data-theme="sepia"] { --bg: #f4ecd8; --fg: #3b2f22; --muted: #7a6a55; --rule: #e0d3b8; --accent: #8a4b16; --bar-bg: #ebe0c6; }
 
 * { box-sizing: border-box; }
@@ -858,7 +860,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
 }
 
 /* Underlines, sub- and superscripts */
-.paper .ul { text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
+.paper .ul { text-decoration: underline; text-decoration-color: var(--underline); text-decoration-thickness: 2px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
 .paper sub, .paper sup { font-size: .72em; line-height: 0; }
 .underline-btn:hover { border-color: var(--accent); color: var(--accent); }
 
@@ -898,11 +900,37 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
   .dialog-input { font-size: 16px; }
 }
 
-/* Inline formulas shown as crops of the PDF: the white of the crop takes on
-   the page's colour (and a highlight's), dark mode inverts the ink. */
-.paper img.inl-math { display: inline; max-width: none; mix-blend-mode: multiply; margin: 0 .05em; }
-:root[data-theme="dark"] .paper img.inl-math { filter: invert(1) hue-rotate(180deg); mix-blend-mode: screen; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .paper img.inl-math,
-  :root[data-theme="auto"] .paper img.inl-math { filter: invert(1) hue-rotate(180deg); mix-blend-mode: screen; }
+/* Inline formulas the text can't carry, typeset as MathML in the math font:
+   letters italic, words (marked upright by the server) and digits upright. */
+.paper .inl-math { white-space: nowrap; }
+.paper .inl-math math { font-family: "STIX Two Math", "STIX Two Text", "Cambria Math", var(--font-body); font-size: 1.02em; }
+.paper .inl-math mi, .paper .inl-math mn { font-family: "STIX Two Text", "STIX Two Math", "Cambria Math", var(--font-body); }
+.paper .inl-math mi { text-transform: none; font-style: italic; }
+.paper .inl-math mi[mathvariant="normal"] { font-style: normal; }
+.paper .inl-math .b { font-weight: 700; }
+
+/* Search in the paper: a find bar under the top bar, on the right. */
+#find-toggle { display: inline-grid; place-items: center; padding: .35rem .55rem; }
+#find-toggle[hidden] { display: none; }
+.find {
+  position: fixed; top: calc(var(--bar-h) + 8px); right: calc(16px + env(safe-area-inset-right)); z-index: 18;
+  display: flex; align-items: center; gap: 4px; padding: 5px 5px 5px 8px;
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 9px; box-shadow: 0 6px 22px rgba(0,0,0,.14);
+  font: .88rem var(--font-ui);
+}
+.find input {
+  width: 15rem; min-width: 0; font: inherit; padding: .3rem .45rem; border: 1px solid transparent; border-radius: 6px;
+  background: var(--bar-bg); color: var(--fg);
+}
+.find input:focus { outline: none; border-color: var(--accent); }
+.find.none input { border-color: #e8590c; }
+.find-count { min-width: 4.5em; text-align: right; color: var(--muted); font-size: .8rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.find button { border: 0; background: none; padding: .2rem .45rem; color: var(--muted); font-size: 1rem; line-height: 1; }
+.find button:hover:not(:disabled) { color: var(--fg); background: var(--bar-bg); }
+.find button:disabled { opacity: .35; cursor: default; }
+::highlight(find) { background-color: rgba(255, 200, 0, .38); color: inherit; }
+::highlight(find-current) { background-color: #ff9632; color: #000; }
+@media (max-width: 760px) {
+  .find { left: calc(8px + env(safe-area-inset-left)); right: calc(8px + env(safe-area-inset-right)); }
+  .find input { flex: 1; width: auto; }
 }

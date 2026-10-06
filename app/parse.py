@@ -11,7 +11,7 @@ import pymupdf as fitz
 from . import inline_math, library
 from .citations import Linker, clean_reference_entries
 from .config import CROP_DPI, SCHEMA_VERSION
-from .segment import _normalize, map_sentences, restore_spaces, split_sentences
+from .segment import _NO_SPLIT_AFTER, _normalize, map_sentences, restore_spaces, split_sentences
 from .xrefs import find_mentions, label_floats
 
 Progress = Callable[[str, float], None]
@@ -43,7 +43,9 @@ def _get_converter():
 
 _REFERENCES = re.compile(r"^\s*(\d+\.?\s*)?(references|bibliography|literature cited)\s*$", re.I)
 _APPENDIX = re.compile(r"^\s*(appendix|appendices|supplementary|[A-H](\.\d+)*[.\s]\s*\S)", re.I)
-_CAPTION_START = re.compile(r"^\s*(Figure|Fig\.|Table|Tab\.)\s*[A-Z]?\d+\s*[:.|]", re.I)
+# "Table 3:", "Figure A.2.", "Table 4 | ..." (the bar may be a glyph with no
+# Unicode, read as U+FFFD), "Figure 1 — ...".
+_CAPTION_START = re.compile(r"^\s*(Figure|Fig\.|Table|Tab\.)\s*[A-Z]?\.?\d+\s*[:.|�—–]", re.I)
 _SENT_END = re.compile(r"[.!?:;][\"')\]]*\s*$")
 
 TEXT_TYPES = {"paragraph", "list_item", "caption", "footnote", "references"}
@@ -88,7 +90,11 @@ def _equation_box(page: fitz.Page, box, prose: list) -> tuple:
             text = "".join(sp["text"] for sp in line["spans"]).strip()
             if not text or lb.is_empty:
                 continue
-            cy = (lb.y0 + lb.y1) / 2
+            # Where the line sits: its text, not a tall glyph in it (a big ∏ or
+            # bracket's box reaches far below the row it belongs to).
+            core = [fitz.Rect(sp["bbox"]) for sp in line["spans"]
+                    if sp["text"].strip() and sp["bbox"][3] - sp["bbox"][1] <= 2.2 * sp["size"]]
+            cy = sum(r.y0 + r.y1 for r in core) / (2 * len(core)) if core else (lb.y0 + lb.y1) / 2
             number = _EQ_NUMBER.match(text) and R.y0 <= cy <= R.y1 and R.x0 < lb.x0 < R.x1 + 80
             # Inside: centred in the box (a little slack for a sum's limits),
             # not just touching it (a tall inline ∏ from the paragraph above).
@@ -232,6 +238,78 @@ def _trim_edge_strips(page: fitz.Page, box) -> tuple:
     return (x0, max(y0, top - 0.3), x1, min(y1, bottom + 0.3))
 
 
+_NOT_FLOAT_TEXT = {"caption", "section_header", "title", "footnote", "page_header", "page_footer"}
+_NUMBERED_HEADING = re.compile(r"^(\d+\.)+\d*\s+[A-Z][a-z]")  # "2. Implementation Detail", Docling may call it text
+
+
+def _float_box(page: fitz.Page, box, texts: list) -> tuple:
+    """Fit a figure's or table's box to whole lines of text at its top and
+    bottom edges. Docling's box (plus the crop's 2 pt margin) often cuts
+    through a line just outside it: the caption under a table, or the
+    table's own title above its first rule. A line of a caption, heading
+    or note, or of running text (five words or more) outside the float, is
+    left out, clear of the margin; any other line within the float's width
+    (a title, an axis label) is its own and is taken in whole. A line the
+    box mostly holds is left as it is. Moving an edge can cut another line,
+    so this repeats until the edges settle. `texts`: the page's captions and
+    text items outside floats, as (rect, whether a caption/heading/note)."""
+    R = fitz.Rect(box)
+    outside = [(t, cap) for t, cap in texts if not _mostly_inside(t, R)]
+    lines = []
+    for blk in page.get_text("dict")["blocks"]:
+        for line in blk.get("lines", []):
+            lb = fitz.Rect(line["bbox"])
+            text = "".join(sp["text"] for sp in line["spans"]).strip()
+            if lb.is_empty or not text or min(lb.x1, R.x1) - max(lb.x0, R.x0) < 0.5 * min(lb.width, R.width):
+                continue
+            prose = len(text.split()) >= 5 or _NUMBERED_HEADING.match(text)
+            theirs = any(t.intersects(lb) and (cap or prose) for t, cap in outside)
+            within = lb.x0 >= R.x0 - 5 and lb.x1 <= R.x1 + 5
+            lines.append((lb, theirs, within))
+    for _ in range(4):
+        top, bottom = R.y0, R.y1
+        pad = R + (-2, -2, 2, 2)
+        for lb, theirs, within in lines:
+            if lb.y1 <= pad.y0 or lb.y0 >= pad.y1 or (R.y0 <= lb.y0 and lb.y1 <= R.y1):
+                continue  # clear of the crop, or inside it
+            if min(lb.y1, R.y1) - max(lb.y0, R.y0) >= 0.6 * lb.height or not theirs and not within:
+                continue  # mostly in already, or not the float's to take
+            if (lb.y0 + lb.y1) / 2 < (R.y0 + R.y1) / 2:
+                top = max(top, lb.y1 + 2.5) if theirs else min(top, lb.y0)
+            else:
+                bottom = min(bottom, lb.y0 - 2.5) if theirs else max(bottom, lb.y1)
+        if bottom - top < 8:
+            return box
+        if (top, bottom) == (R.y0, R.y1):
+            break
+        R = fitz.Rect(R.x0, top, R.x1, bottom)
+    return (R.x0, R.y0, R.x1, R.y1)
+
+
+def _drop_nested_floats(raw: list[dict], paper_id: str) -> list[dict]:
+    """Docling sometimes boxes a group of tables (or figures) both one by one
+    and as a whole picture, so they would show twice. A float without a
+    caption lying within a bigger one on the same page is dropped, when
+    such floats fill most of it (a box that also takes in running text, as
+    Docling's boxes sometimes do, is no whole of them); an uncaptioned whole
+    takes their kind if they were all tables."""
+    floats = [b for b in raw if b["type"] in ("figure", "table") and b.get("_pos")]
+    drop = set()
+    for big in floats:
+        p, *bb = big["_pos"]
+        inner = [b for b in floats if b is not big and id(b) not in drop and b["_pos"][0] == p
+                 and not b.get("_captions") and _mostly_inside(b["_pos"][1:], bb)
+                 and fitz.Rect(b["_pos"][1:]).get_area() < 0.9 * fitz.Rect(bb).get_area()]
+        if not inner or sum(fitz.Rect(b["_pos"][1:]).get_area() for b in inner) < 0.6 * fitz.Rect(bb).get_area():
+            continue
+        if big["type"] == "figure" and not big.get("_captions") and all(b["type"] == "table" for b in inner):
+            big["type"] = "table"
+        for b in inner:
+            drop.add(id(b))
+            (library.assets_dir(paper_id) / Path(b["image"]).name).unlink(missing_ok=True)
+    return [b for b in raw if id(b) not in drop]
+
+
 def _crop(pdf: fitz.Document, paper_id: str, name: str, prov) -> dict | None:
     """Render a region of the page to a PNG. None if it would be empty
     (a speck, or a blank area Docling mistook for a picture)."""
@@ -287,13 +365,20 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
     # Text on each page, for telling an equation from the prose Docling's
     # formula boxes often overlap: {page: [(rect, its letters)]}.
     prose: dict[int, list] = {}
+    # Captions and the text outside figures and tables (not their labels or
+    # cells), which a float's crop leaves out at its edges: {page: [(rect,
+    # whether it is a caption, heading or note, never part of a float)]}.
+    text_outside: dict[int, list] = {}
     formulas = []
     for item, _level in doc.iterate_items():
         if _label(item) == "formula" and item.prov:
             formulas.append(item)
         elif _label(item) not in ("picture", "chart", "table") and item.prov and getattr(item, "text", ""):
+            parent = getattr(getattr(item, "parent", None), "cref", "") or ""
             for page_no, box in _provs(item, doc):
                 prose.setdefault(page_no, []).append((fitz.Rect(box), re.sub(r"[^a-z]", "", item.text.lower())))
+                if _label(item) == "caption" or not parent.startswith(("#/pictures", "#/tables")):
+                    text_outside.setdefault(page_no, []).append((fitz.Rect(box), _label(item) in _NOT_FLOAT_TEXT))
     # Each equation's crop, fitted to the equation; a box that lies within a
     # bigger one (Docling boxed a row, or a symbol, of an equation twice) is skipped.
     eq_box = {}
@@ -327,7 +412,9 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
                 continue
             n_float += 1
             kind = "table" if label == "table" else "figure"
-            crop = _crop(pdf, paper_id, f"{kind}-{n_float}", _provs(item, doc)[0])
+            page_no, box = _provs(item, doc)[0]
+            box = _float_box(pdf[page_no - 1], box, text_outside.get(page_no, []))
+            crop = _crop(pdf, paper_id, f"{kind}-{n_float}", (page_no, box))
             if crop is None:
                 continue
             block = {"type": kind, **crop}
@@ -441,6 +528,7 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
             to_table(b)
 
     raw, n_float = _attach_captions(raw, pdf, paper_id, n_float)
+    raw = _drop_nested_floats(raw, paper_id)
     raw, n_float = _merge_split_figures(raw, pdf, paper_id, n_float)
     raw = _merge_split_paragraphs(raw)
     raw = _place_footnotes(raw)
@@ -503,7 +591,7 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
         if refs:
             s["xrefs"] = refs
 
-    formulas = _crop_formulas(pdf, paper_id, sentences, page_formulas)
+    formulas = _formulas(pdf, sentences, page_formulas)
     pdf.close()
     src = library.source_info(paper_id)
     return {
@@ -520,21 +608,19 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
     }
 
 
-def _crop_formulas(pdf: fitz.Document, paper_id: str, sentences: dict, found: dict) -> dict:
-    """Crop the inline formulas sentences show as images; drop the ranges of
-    any that can't be cropped. {id: {"image", "w", "h", "d"}} (sizes in em)."""
+def _formulas(pdf: fitz.Document, sentences: dict, found: dict) -> dict:
+    """The inline formulas sentences show, as MathML; drop the ranges of any
+    that came out empty. {id: {"mathml"}}."""
     out = {}
     for s in sentences.values():
         keep = []
         for a, b, fid in s.get("formula", []):
             if fid not in out and fid in found:
                 f = found[fid]
-                got = inline_math.crop(pdf[f["page"] - 1], f, CROP_DPI)
-                if got:
-                    png, metrics = got
-                    name = inline_math.file_name(f["page"], f["k"], png)
-                    (library.assets_dir(paper_id) / name).write_bytes(png)
-                    out[fid] = {"image": f"assets/{name}", **metrics}
+                a, b = _widen_formula(s["text"], a, b, inline_math.symbols(f["chars"]))
+                mathml = inline_math.to_mathml(f["chars"], pdf[f["page"] - 1], s["text"][a:b])
+                if mathml:
+                    out[fid] = {"mathml": mathml}
             if fid in out:
                 keep.append([a, b, fid])
         if keep:
@@ -542,6 +628,22 @@ def _crop_formulas(pdf: fitz.Document, paper_id: str, sentences: dict, found: di
         else:
             s.pop("formula", None)
     return out
+
+
+def _widen_formula(text: str, a: int, b: int, symbols: list[str]) -> tuple[int, int]:
+    """Take into a formula's range a symbol of its own that the text has just
+    beside it (the □ of □ʳ₍ₜ₎ when only "r [t]" matched), so it shows once."""
+    if symbols and not symbols[0].isalnum() and not text[a:b].lstrip().startswith(symbols[0]):
+        for k in (1, 2):
+            if a - k >= 0 and text[a - k] == symbols[0] and not text[a - k + 1:a].strip():
+                a -= k
+                break
+    if symbols and not symbols[-1].isalnum() and not text[a:b].rstrip().endswith(symbols[-1]):
+        for k in (0, 1):
+            if b + k < len(text) and text[b + k] == symbols[-1] and not text[b:b + k].strip():
+                b += k + 1
+                break
+    return a, b
 
 
 def _pdf_title(pdf: fitz.Document) -> str | None:
@@ -1180,21 +1282,30 @@ def _place_footnotes(raw: list[dict]) -> list[dict]:
 def _merge_split_paragraphs(raw: list[dict]) -> list[dict]:
     """Docling splits paragraphs that break across a column or page. Rejoin a
     paragraph that ends mid-sentence with the next paragraph, even if figures,
-    tables or footnotes were placed between them."""
+    tables or footnotes were placed between them. One that ends on an
+    abbreviation ("Nair et al.", "e.g.") is rejoined when the next starts like
+    the rest of a sentence: lowercase, a citation ("[16] use ...") or a number."""
     out: list[dict] = []
-    open_para = None  # index in `out` of a paragraph that ended mid-sentence
+    open_para = None  # index in `out` of a paragraph that may continue
+    ending = "done"  # how it ends: "open" (mid-sentence), "abbrev" or "done"
+
+    def end_of(text):
+        if not _SENT_END.search(text):
+            return "open"
+        return "abbrev" if _NO_SPLIT_AFTER.search(text.rstrip() + " ") else "done"
+
     for b in raw:
-        if b["type"] == "paragraph" and open_para is not None and out[open_para]["region"] == b["region"] != "front":
+        if b["type"] == "paragraph" and open_para is not None and out[open_para]["region"] == b["region"] != "front" \
+                and (ending == "open" or ending == "abbrev" and re.match(r"\s*([a-z0-9]|[\[(]\d)", b["text"])):
             prev = out[open_para]
             joiner = "" if prev["text"].endswith("-") else " "
             prev["text"] += joiner + b["text"]
             prev["provs"] += b["provs"]
-            if _SENT_END.search(prev["text"]):
-                open_para = None
+            ending = end_of(prev["text"])
             continue
         if b["type"] == "paragraph":
             out.append(b)
-            open_para = None if _SENT_END.search(b["text"]) else len(out) - 1
+            open_para, ending = len(out) - 1, end_of(b["text"])
             continue
         if b["type"] not in FLOAT_TYPES:
             open_para = None

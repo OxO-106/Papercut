@@ -279,3 +279,59 @@ def test_inline_formula_seeds():
     from app.inline_math import _hard, _mathy
     assert _hard("\x04") and _hard("�") and _hard("⌊") and _hard("˜")
     assert _mathy("𝑡") and _mathy("α") and _mathy("∈") and not _mathy("a")
+
+
+def test_figure_mentions_any_case_and_dotted_labels():
+    from app.xrefs import _CAPTION_LABEL, _key, find_mentions
+    labels = {"figure:1": "b1", "table:A3": "b2", "table:4": "b3"}
+    hits = find_mentions("For example, in figure 1, see Table A.3 and TABLE 4.", labels)
+    assert [ids for _, _, ids in hits] == [["b1"], ["b2"], ["b3"]]
+    m = _CAPTION_LABEL.match("9 Figure 6: New module")  # a page number glued in front
+    assert _key("figure", m[2]) == "figure:6"
+
+
+def test_caption_with_an_unmapped_bar():
+    from app.parse import _caption_kind
+    assert _caption_kind("Table 4 � Chinchilla architecture details.") == "table"
+    assert _caption_kind("Table A.3: Performance comparison") == "table"
+
+
+def _para(text):
+    return {"type": "paragraph", "region": "body", "text": text, "provs": []}
+
+
+def test_paragraph_ending_on_et_al_continues_after_a_float():
+    from app.parse import _merge_split_paragraphs
+    raw = [_para("Yoran et al. [31] and Nair et al."), {"type": "table", "region": "body"},
+           _para("[16] use decider models to reason over several generations.")]
+    out = _merge_split_paragraphs(raw)
+    assert out[0]["text"] == "Yoran et al. [31] and Nair et al. [16] use decider models to reason over several generations."
+    # A finished sentence stays apart from a next paragraph that starts lowercase (a command).
+    raw = [_para("Let's look at the file."), _para("ls -a")]
+    assert len(_merge_split_paragraphs(raw)) == 2
+
+
+def _glyph(c, x, oy, size=10.0, font="CMMI10"):
+    return {"c": c, "x0": x, "x1": x + 0.5 * size, "y0": oy - 0.75 * size, "y1": oy + 0.25 * size,
+            "gy0": oy - 0.7 * size, "gy1": oy + 0.2 * size, "oy": oy, "size": size, "main": 10.0,
+            "row_main": 10.0, "row_base": 100.0, "baseline": 100.0, "big": False, "font": font, "bold": False}
+
+
+def test_inline_formula_as_mathml():
+    from app.inline_math import to_mathml
+    # a′ᵢ: the prime beside the letter, the i as a subscript.
+    cl = [_glyph("a", 10, 100), _glyph("′", 15, 97, 7, "CMSY7"), _glyph("i", 15.5, 102, 7, "CMMI7")]
+    assert to_mathml(cl) == '<math><msub><mrow><mi>a</mi><mo lspace="0" rspace="0">′</mo></mrow><mi>i</mi></msub></math>'
+    # TeX's big operator without Unicode ("Q" in cmex) with its limits beside it.
+    cl = [_glyph("Q", 10, 100, 10, "CMEX10"), _glyph("n", 17, 96, 7, "CMMI7"), _glyph("i", 17, 103, 7, "CMMI7")]
+    assert to_mathml(cl) == "<math><msubsup><mo>∏</mo><mi>i</mi><mi>n</mi></msubsup></math>"
+    # An unmatched bracket the text shows outside the formula is left to the text.
+    cl = [_glyph("x", 10, 100), _glyph("[", 15, 100, 10, "CMR10")]
+    assert to_mathml(cl, text="x") == "<math><mi>x</mi></math>"
+
+
+def test_formula_range_takes_in_its_own_symbol_beside_it():
+    from app.parse import _widen_formula
+    s = "and □r [t] = x"
+    a = s.index("r [t]")
+    assert _widen_formula(s, a, a + 5, ["□", "[", "t", "]", "r"]) == (s.index("□"), a + 5)

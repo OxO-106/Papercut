@@ -50,6 +50,7 @@
           </div>
         </span>
       </span>
+      <button id="find-toggle" type="button" aria-expanded="false" aria-controls="find" title="Search in this paper (Ctrl+F)" aria-label="Search in this paper" hidden><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M15 15l5 5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></button>
       <button id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings" title="Reading settings">Aa</button>
     </div>
   </header>
@@ -271,6 +272,14 @@
     <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
     <p id="progress-error" class="error" hidden></p>
   </main>
+
+  <div id="find" class="find" role="search" hidden>
+    <input id="find-input" type="search" placeholder="Search in paper" aria-label="Search in paper" autocomplete="off" spellcheck="false">
+    <span id="find-count" class="find-count" aria-live="polite"></span>
+    <button id="find-prev" type="button" title="Previous match (Shift+Enter)" aria-label="Previous match">↑</button>
+    <button id="find-next" type="button" title="Next match (Enter)" aria-label="Next match">↓</button>
+    <button id="find-close" type="button" title="Close (Esc)" aria-label="Close search">×</button>
+  </div>
 
   <main id="reader" hidden>
     <div id="notice" class="notice" hidden></div>

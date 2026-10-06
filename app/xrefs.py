@@ -8,14 +8,21 @@ figure/table block next to it.
 
 import re
 
-_CAPTION_LABEL = re.compile(r"^\s*(Figure|Fig\.?|Table|Tab\.?)\s*([A-Z]?\d+)", re.I)
+# A caption may carry a page number Docling glued on in front ("9 Figure 6:").
+# Labels may have a dot ("Table A.3"), which keys leave out.
+_CAPTION_LABEL = re.compile(r"^\s*(?:\d{1,3}\s+)?(Figure|Fig\.?|Table|Tab\.?)\s*([A-Z]?\.?\d+)", re.I)
+# Mentions in any case ("in figure 1", "TABLE 2"); a part letter ("4a") is lowercase.
 _MENTION = re.compile(
-    r"\b(Figures?|Figs?\.|Tables?|Tabs?\.)\s*([A-Z]?\d+)[a-z]?((?:\s*(?:,|and|&|–|-|to)\s*[A-Z]?\d+[a-z]?)*)",
+    r"\b((?i:Figures?|Figs?\.|Tables?|Tabs?\.))\s*([A-Z]?\.?\d+)[a-z]?((?:\s*(?:,|and|&|–|-|to)\s*[A-Z]?\.?\d+[a-z]?)*)",
 )
 
 
 def _kind(word: str) -> str:
     return "table" if word.lower().startswith("tab") else "figure"
+
+
+def _key(kind: str, label: str) -> str:
+    return f"{kind}:{label.replace('.', '').upper()}"
 
 
 def label_floats(blocks: list[dict], sentences: dict) -> dict[str, str]:
@@ -29,14 +36,14 @@ def label_floats(blocks: list[dict], sentences: dict) -> dict[str, str]:
         if b["type"] in ("figure", "table"):
             m = _CAPTION_LABEL.match(caption_text(b))
             if m:
-                labels.setdefault(f"{_kind(m[1])}:{m[2].upper()}", b["id"])
+                labels.setdefault(_key(_kind(m[1]), m[2]), b["id"])
     for i, b in enumerate(blocks):
         if b["type"] != "caption":
             continue
         m = _CAPTION_LABEL.match(caption_text(b))
         if not m:
             continue
-        key = f"{_kind(m[1])}:{m[2].upper()}"
+        key = _key(_kind(m[1]), m[2])
         if key in labels:
             continue
         # Pair with an adjacent unlabelled float; captions sit just above or below.
@@ -56,14 +63,14 @@ def find_mentions(text: str, labels: dict[str, str]) -> list[list]:
     out = []
     for m in _MENTION.finditer(text):
         kind = _kind(m[1])
-        nums = [m[2]] + re.findall(r"[A-Z]?\d+", m[3] or "")
+        nums = [m[2]] + re.findall(r"[A-Z]?\.?\d+", m[3] or "")
         # "Figures 2-4": expand plain numeric ranges
         rng = re.fullmatch(r"\s*[–-]\s*(\d+)[a-z]?\s*", m[3] or "")
         if rng and m[2].isdigit():
             nums = [str(n) for n in range(int(m[2]), min(int(rng[1]), int(m[2]) + 10) + 1)]
         ids = []
         for n in nums:
-            bid = labels.get(f"{kind}:{n.upper()}")
+            bid = labels.get(_key(kind, n))
             if bid and bid not in ids:
                 ids.append(bid)
         if ids:
