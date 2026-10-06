@@ -865,3 +865,35 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
 /* Formulas in running text: the paper's math, in a math font */
 .paper .math { font-family: "STIX Two Text", "STIX Two Math", var(--font-body); font-size: 1.02em; }
 .paper .math i { font-style: italic; }
+
+/* Courses: tabs next to the status ones, a tag on each paper, and the
+   "which course?" dialog. */
+.lib-filters { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; min-width: 0; }
+.lib-courses { display: flex; gap: 4px; flex-wrap: wrap; padding-left: .6rem; border-left: 1px solid var(--rule); }
+.lib-courses[hidden] { display: none; }
+.lib-courses button { padding: .3rem .8rem; white-space: nowrap; }
+.course-tag {
+  display: inline-flex; align-items: center; padding: .05rem .55rem; border-radius: 999px; font-size: .74rem; line-height: 1.6;
+  border: 1px solid var(--fg); background: var(--fg); color: var(--bg); font-weight: 500;
+}
+.course-tag:hover { background: var(--accent); border-color: var(--accent); }
+.course-tag.course-none { background: none; color: var(--muted); border: 1px dashed var(--rule); font-weight: 400; }
+.course-tag.course-none:hover { color: var(--fg); border-color: var(--muted); }
+.lib-remove { font-size: .74rem; align-self: flex-start; }
+.lib-remove:hover, .menu .danger { color: #c92a2a; }
+.course-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .7rem; }
+.course-chips:empty { display: none; }
+.course-chip { padding: .35rem .8rem; border-radius: 999px; border: 1px solid var(--rule); background: var(--bar-bg); color: var(--fg); }
+.course-chip:hover, .course-chip[aria-pressed="true"] { border-color: var(--fg); }
+.dialog-input {
+  width: 100%; box-sizing: border-box; font: inherit; padding: .55rem .7rem; border-radius: 8px;
+  border: 1px solid var(--rule); background: var(--bg); color: var(--fg);
+}
+.dialog-input:focus { outline: none; border-color: var(--accent); }
+#course-paper { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .lib-filters { width: 100%; }
+  .lib-courses { width: 100%; flex-wrap: nowrap; overflow-x: auto; padding-left: 0; border-left: 0; scrollbar-width: none; }
+  .lib-side .lib-remove { grid-column: 1 / -1; justify-self: end; }
+  .dialog-input { font-size: 16px; }
+}

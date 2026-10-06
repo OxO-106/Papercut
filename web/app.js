@@ -156,8 +156,63 @@ async function upload(file) {
   body.append("file", file);
   show("progress");
   setProgress({ stage: "Uploading", progress: 0 });
-  const { id } = await api("/api/papers", { method: "POST", body });
+  const sent = api("/api/papers", { method: "POST", body });
+  const course = await askCourse(file.name.replace(/\.pdf$/i, ""));
+  const { id } = await sent;
+  await fileUnder(id, course);
   location.hash = `#/paper/${id}`;
+}
+
+// Which course a paper is for: asked when it is added (while it uploads),
+// or from its course tag in the library. Resolves to the course name, null
+// for none, or `current` when the dialog is dismissed.
+async function askCourse(title, current = null) {
+  if (!lib.courses) await loadLibraryData();
+  const d = $("course-dialog"), input = $("course-input");
+  $("course-paper").textContent = title || "";
+  input.value = current || "";
+  $("course-list").replaceChildren(...(lib.courses || []).map((c) => new Option(c)));
+  $("course-chips").replaceChildren(...(lib.courses || []).map((c) => {
+    const b = el("button", "course-chip", c);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(c === current));
+    b.addEventListener("click", () => { input.value = c; courseAnswer("ok"); });
+    return b;
+  }));
+  courseAnswer(); // a dialog still open from before counts as dismissed
+  d.showModal();
+  if (!lib.courses?.length || !matchMedia("(hover: none)").matches) input.focus();
+  return new Promise((done) => {
+    courseAnswer = (how) => {
+      courseAnswer = () => {};
+      if (d.open) d.close();
+      done(how === "ok" ? input.value.replace(/\s+/g, " ").trim() || null : how === "none" ? null : current);
+    };
+  });
+}
+let courseAnswer = () => {};
+$("course-form").addEventListener("submit", (e) => { e.preventDefault(); courseAnswer(e.submitter?.value || "ok"); });
+$("course-dialog").addEventListener("close", () => courseAnswer()); // Escape
+$("course-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); courseAnswer("ok"); }
+});
+
+async function fileUnder(id, course) {
+  if (!course) return;
+  await api(`/api/library/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ course }) })
+    .catch(() => {});
+}
+
+// Remove a paper and everything made with it, after asking.
+async function removePaper(id, title) {
+  if (!confirm(`Remove “${title}” from Papercut?\n\nIts PDF, highlights, notes, questions, flashcards and review history will be deleted. This can't be undone.`)) return false;
+  const r = await fetch(`/api/papers/${id}`, { method: "DELETE" });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    alert(body.detail || `Could not remove it (HTTP ${r.status}).`);
+    return false;
+  }
+  return true;
 }
 
 $("file").addEventListener("change", (e) => upload(e.target.files[0]));
@@ -172,12 +227,15 @@ $("link-form").addEventListener("submit", async (e) => {
   show("progress");
   setProgress({ stage: "Finding and downloading the PDF…", progress: 0.02 });
   try {
-    const r = await fetch("/api/papers/from-link", {
+    const sent = fetch("/api/papers/from-link", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ link }),
     });
+    const course = await askCourse(link);
+    const r = await sent;
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
     $("link-input").value = "";
+    await fileUnder(body.id, course);
     location.hash = `#/paper/${body.id}`;
   } catch (err) {
     showHome();
@@ -2241,6 +2299,12 @@ $("reprocess").addEventListener("click", async () => {
   if (await waitUntilProcessed(id)) { current = null; openPaper(id); }
 });
 
+$("remove-paper").addEventListener("click", async () => {
+  if (!current) return;
+  closeMenu();
+  if (await removePaper(current.id, current.meta.title)) { current = null; location.hash = "#/"; }
+});
+
 // ---------- The "More" menu ----------
 function closeMenu() {
   $("more-menu").hidden = true;
@@ -2703,13 +2767,17 @@ document.addEventListener("keydown", (e) => {
 // over titles, authors, topics and summaries, and after a pause through the
 // text of every paper.
 let lib = { papers: [], collections: [] };
-const libView = { status: "all", col: null, q: "" }; // col: null = all, "" = none, else a name
+const libView = { status: "all", course: null, col: null, q: "" }; // col: null = all, "" = none, else a name
 try { Object.assign(libView, JSON.parse(localStorage.getItem("libView") || "{}"), { q: "" }); } catch {}
 let libTimer = null, searchTimer = null, searchRun = 0;
 
+async function loadLibraryData() {
+  try { lib = await api("/api/library"); } catch { lib = { papers: [], collections: [], courses: [] }; }
+}
+
 async function loadLibrary() {
   clearTimeout(libTimer);
-  try { lib = await api("/api/library"); } catch { lib = { papers: [], collections: [] }; }
+  await loadLibraryData();
   renderLibrary();
   // Poll while the AI is organizing or papers are still processing.
   const busy = ["queued", "running"].includes(lib.organize?.state) || lib.papers.some((p) => p.processing);
@@ -2717,12 +2785,12 @@ async function loadLibrary() {
 }
 
 function saveLibView() {
-  try { localStorage.setItem("libView", JSON.stringify({ status: libView.status, col: libView.col })); } catch {}
+  try { localStorage.setItem("libView", JSON.stringify({ status: libView.status, course: libView.course, col: libView.col })); } catch {}
 }
 
 function libMatches(p, q) {
   if (!q) return true;
-  const hay = [p.title, p.authors, p.venue, p.year, p.tldr, p.collection, ...(p.topics || []), ...(p.tags || [])]
+  const hay = [p.title, p.authors, p.venue, p.year, p.tldr, p.collection, p.course, ...(p.topics || []), ...(p.tags || [])]
     .join(" ").toLowerCase();
   return q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 }
@@ -2731,6 +2799,18 @@ function renderLibrary() {
   const papers = lib.papers;
   $("lib-count").textContent = papers.length ? `(${papers.length})` : "";
   for (const b of $("lib-status").children) b.setAttribute("aria-pressed", String(b.dataset.v === libView.status));
+  // Course tabs, next to the status ones: a second click shows every course again.
+  const courses = lib.courses || [];
+  if (libView.course && !courses.includes(libView.course)) libView.course = null;
+  $("lib-courses").hidden = !courses.length;
+  $("lib-courses").replaceChildren(...courses.map((c) => {
+    const b = el("button", null, c);
+    b.type = "button";
+    b.title = `Papers for ${c}`;
+    b.setAttribute("aria-pressed", String(libView.course === c));
+    b.addEventListener("click", () => { libView.course = libView.course === c ? null : c; saveLibView(); renderLibrary(); });
+    return b;
+  }));
   $("lib-sort").value = settings.libSort || "opened";
 
   // Continue reading: started but not finished, most recent first.
@@ -2791,6 +2871,7 @@ function renderLibrary() {
   }[sort];
   const shown = papers
     .filter((p) => libView.status === "all" || p.status === libView.status)
+    .filter((p) => !libView.course || p.course === libView.course)
     .filter((p) => libView.col === null || (p.collection || "") === libView.col)
     .filter((p) => libMatches(p, libView.q))
     .sort(cmp);
@@ -2816,6 +2897,16 @@ function libRow(p) {
   if (p.processing) main.append(el("div", "lib-meta", "Processing…"));
   if (p.tldr) main.append(el("p", "lib-tldr", p.tldr));
   const tags = el("div", "lib-tags");
+  if (!p.processing) {
+    const c = el("button", p.course ? "course-tag" : "course-tag course-none", p.course || "+ course");
+    c.type = "button";
+    c.title = p.course ? "Course: click to change" : "File this paper under a course";
+    c.addEventListener("click", async () => {
+      const course = await askCourse(p.title, p.course);
+      if (course !== (p.course || null)) setShelf(p, { course });
+    });
+    tags.append(c);
+  }
   for (const t of p.topics || []) {
     const b = el("button", "topic", t);
     b.type = "button";
@@ -2894,6 +2985,11 @@ function libRow(p) {
     ].filter(Boolean).join(" · ");
     if (counts) side.append(el("span", "lib-counts", counts));
   }
+  const rm = el("button", "link lib-remove", "Remove");
+  rm.type = "button";
+  rm.title = "Delete this paper from the library";
+  rm.addEventListener("click", async () => { if (await removePaper(p.id, p.title)) loadLibrary(); });
+  side.append(rm);
   row.append(main, side);
   return row;
 }

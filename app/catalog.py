@@ -1,9 +1,9 @@
 """The library as a whole: an index of every paper, the reader's own shelf
-data (status, tags, collection), AI collections, and connections between
+data (status, tags, course, collection), AI collections, and connections between
 papers (search across all papers, related papers, citations within the library).
 
 Files in the library folder:
-  shelf.json      {paper id: {"status", "tags", "collection", "added"}}: the reader's edits
+  shelf.json      {paper id: {"status", "tags", "course", "collection"}}: the reader's edits
   collections.json {"collections": [{"name", "about"}], "assign": {id: name}, "at"}: the AI's grouping
 Per paper, the index keeps the few fields the library page needs, cached in
 memory by paper.json's modification time.
@@ -107,7 +107,7 @@ def load_shelf() -> dict:
 
 
 def update_shelf(pid: str, patch: dict) -> dict:
-    """Set a paper's status, tags or collection (None clears)."""
+    """Set a paper's status, tags, course or collection (None clears)."""
     with _lock:
         shelf = load_shelf()
         cur = shelf.setdefault(pid, {})
@@ -122,6 +122,11 @@ def update_shelf(pid: str, patch: dict) -> dict:
                 if t and t.lower() not in (x.lower() for x in tags):
                     tags.append(t)
             cur["tags"] = tags[:20]
+        if "course" in patch:
+            course = re.sub(r"\s+", " ", str(patch["course"] or "")).strip()[:40]
+            # Same course, same spelling: "cse 517" files under an existing "CSE 517".
+            known = {c.lower(): c for c in courses()}
+            cur["course"] = known.get(course.lower(), course) or None
         if "collection" in patch:
             cur["collection"] = (str(patch["collection"]).strip()[:60] or None) if patch["collection"] else None
         cur = {k: v for k, v in cur.items() if v not in (None, [], "")}
@@ -131,6 +136,24 @@ def update_shelf(pid: str, patch: dict) -> dict:
             shelf.pop(pid, None)
         _write(SHELF_FILE, shelf)
         return cur
+
+
+def courses() -> list[str]:
+    """Every course a paper is filed under, in alphabetical order."""
+    return sorted({v["course"] for v in load_shelf().values() if v.get("course")}, key=str.lower)
+
+
+def forget(pid: str) -> None:
+    """Drop a removed paper from the shelf, the collections and the caches."""
+    with _lock:
+        shelf = load_shelf()
+        if shelf.pop(pid, None) is not None:
+            _write(SHELF_FILE, shelf)
+        cols = load_collections()
+        if cols.get("assign", {}).pop(pid, None) is not None:
+            _write(COLLECTIONS_FILE, cols)
+    _cache.pop(pid, None)
+    _vec_cache.pop(pid, None)
 
 
 def load_collections() -> dict:
@@ -152,6 +175,7 @@ def entries() -> list[dict]:
         e = {k: v for k, v in e.items() if not k.startswith("_")}
         mine = shelf.get(pid, {})
         e["tags"] = mine.get("tags", [])
+        e["course"] = mine.get("course")
         e["collection"] = mine.get("collection") or cols["assign"].get(pid)
         e["collection_set_by"] = "you" if mine.get("collection") else ("ai" if cols["assign"].get(pid) else None)
         e["percent"] = library.load_position(pid).get("percent")
@@ -252,7 +276,10 @@ _vec_cache: dict[str, tuple[float, list[dict], np.ndarray | None]] = {}
 
 def _passages(pid: str):
     """(passages, unit vectors or None) for one paper, cached by paper.json's mtime."""
-    mtime = library.json_path(pid).stat().st_mtime
+    try:
+        mtime = library.json_path(pid).stat().st_mtime
+    except FileNotFoundError:  # removed while searching
+        return [], None
     hit = _vec_cache.get(pid)
     if hit and hit[0] == mtime:
         return hit[1], hit[2]

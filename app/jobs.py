@@ -84,6 +84,23 @@ def submit(paper_id: str, kind: str = "full", force: bool = False) -> None:
     _queue.put((paper_id, kind))
 
 
+def busy(paper_id: str) -> bool:
+    """Whether the AI is working on this paper right now."""
+    with _lock:
+        return any(v.get("state") == "running" for k, v in _status.items()
+                   if k == paper_id or k.startswith(f"{paper_id}:"))
+
+
+def forget(paper_id: str) -> None:
+    """A removed paper: drop its job states and queued jobs (the worker skips
+    any still in the queue)."""
+    with _lock:
+        for k in [k for k in _status if k == paper_id or k.startswith(f"{paper_id}:")]:
+            del _status[k]
+        _pending[:] = [x for x in _pending if x[0] != paper_id]
+        _save_pending()
+
+
 def _finished(paper_id: str, kind: str) -> None:
     with _lock:
         if [paper_id, kind] in _pending:
@@ -152,6 +169,10 @@ def _highlight(paper_id: str, paper: dict, lo: float) -> None:
 def _worker() -> None:
     while True:
         paper_id, kind = _queue.get()
+        if paper_id != LIBRARY_ID and not library.pdf_path(paper_id).exists():  # removed meanwhile
+            _finished(paper_id, kind)
+            _queue.task_done()
+            continue
         if kind in SIDE_KINDS:
             key = side_key(paper_id, kind)
             what = {"insights": "Questions", "summary": "Summary", "cards": "Flashcards"}.get(kind, "Collections")

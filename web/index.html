@@ -46,6 +46,7 @@
             <button id="export-md" type="button" role="menuitem" title="Summary, highlights, notes, questions and cards as a Markdown file">Export Markdown…</button>
             <hr>
             <button id="reprocess" type="button" role="menuitem" title="Parse this paper again">Reprocess the PDF</button>
+            <button id="remove-paper" type="button" role="menuitem" class="danger" title="Delete this paper and everything you made with it">Remove from library…</button>
           </div>
         </span>
       </span>
@@ -133,6 +134,21 @@
     <div id="cards" class="chat-log cards"></div>
   </aside>
 
+  <dialog id="course-dialog" class="dialog">
+    <form method="dialog" id="course-form">
+      <h3>Which course is this paper for?</h3>
+      <p id="course-paper" class="dialog-hint"></p>
+      <div id="course-chips" class="course-chips"></div>
+      <input id="course-input" class="dialog-input" type="text" list="course-list" autocomplete="off" spellcheck="false"
+             placeholder="Course, e.g. CSE 517" aria-label="Course">
+      <datalist id="course-list"></datalist>
+      <div class="dialog-actions">
+        <button type="submit" value="none" class="link">No course</button>
+        <button type="submit" value="ok" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="md-dialog" class="dialog">
     <form method="dialog" id="md-form">
       <h3>Export Markdown</h3>
@@ -196,11 +212,14 @@
                placeholder="Search titles, authors, topics, or anything inside your papers…" aria-label="Search the library">
       </div>
       <div class="lib-tools">
-        <div class="seg lib-status" id="lib-status" role="group" aria-label="Filter by status">
-          <button type="button" data-v="all">All</button>
-          <button type="button" data-v="to-read">To read</button>
-          <button type="button" data-v="reading">Reading</button>
-          <button type="button" data-v="done">Done</button>
+        <div class="lib-filters">
+          <div class="seg lib-status" id="lib-status" role="group" aria-label="Filter by status">
+            <button type="button" data-v="all">All</button>
+            <button type="button" data-v="to-read">To read</button>
+            <button type="button" data-v="reading">Reading</button>
+            <button type="button" data-v="done">Done</button>
+          </div>
+          <div class="seg lib-courses" id="lib-courses" role="group" aria-label="Filter by course" hidden></div>
         </div>
         <label class="lib-sort">Sort
           <select id="lib-sort">

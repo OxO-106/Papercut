@@ -76,6 +76,20 @@ def from_link(body: dict = Body(...)):
     return {"id": paper_id}
 
 
+@app.delete("/api/papers/{paper_id}")
+def delete_paper(paper_id: str):
+    """Remove a paper from the library: its files, shelf entry, collection,
+    review history and links from other papers."""
+    _existing(paper_id)
+    if jobs.busy(paper_id):
+        raise HTTPException(409, "The AI is working on this paper right now. Try again when it finishes.")
+    jobs.forget(paper_id)
+    library.remove(paper_id)
+    catalog.forget(paper_id)
+    cards.forget(paper_id)
+    return {"removed": paper_id}
+
+
 @app.post("/api/papers/{paper_id}/reprocess")
 def reprocess(paper_id: str):
     _existing(paper_id)
@@ -491,15 +505,16 @@ def add_reference(paper_id: str, block_id: str):
 
 @app.get("/api/library")
 def get_library():
-    """Every paper with its shelf data, plus the collections."""
+    """Every paper with its shelf data, plus the collections and courses."""
     cols = catalog.load_collections()
     return {"papers": catalog.entries(), "collections": cols["collections"], "organized": cols.get("at"),
+            "courses": catalog.courses(),
             "organize": jobs.status(jobs.side_key(jobs.LIBRARY_ID, "organize"))}
 
 
 @app.put("/api/library/{paper_id}")
 def put_shelf(paper_id: str, body: dict = Body(...)):
-    """Set a paper's status (to-read/reading/done/null), tags or collection."""
+    """Set a paper's status (to-read/reading/done/null), tags, course or collection."""
     _existing(paper_id)
     try:
         return catalog.update_shelf(paper_id, body)

@@ -174,6 +174,26 @@ def carry_over(old: dict, new: dict) -> None:
                              highlight_version=old["status"].get("highlight_version", 1))
 
 
+def remove(paper_id: str) -> None:
+    """Delete a paper's folder (PDF, parsed text, images, notes, position) and
+    any links to it from the papers that cite it."""
+    shutil.rmtree(paper_dir(paper_id), ignore_errors=True)
+    items = load_recent()
+    if any(r["id"] == paper_id for r in items):
+        RECENT_FILE.write_text(json.dumps([r for r in items if r["id"] != paper_id], ensure_ascii=False), "utf-8")
+    if not PAPERS_DIR.exists():
+        return
+    for d in PAPERS_DIR.iterdir():
+        p = d / "paper.json"
+        if not p.exists() or paper_id not in p.read_text("utf-8"):
+            continue
+        try:
+            update_paper(d.name, lambda paper: paper.update(ref_links={
+                k: v for k, v in paper.get("ref_links", {}).items() if v != paper_id}))
+        except (FileNotFoundError, ValueError):
+            pass
+
+
 def load_recent() -> list[dict]:
     try:
         return json.loads(RECENT_FILE.read_text("utf-8"))

@@ -18,7 +18,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the full design.
 - **Summary:** a one-page cheat sheet of each paper (problem, approach, key results with numbers, contributions, limitations, open questions), each point linked to the sentences it rests on.
 - **Questions:** Papercut generates insightful questions about the key highlights and tries to answer them from the paper or from outside sources. They can open in their own window or be exported.
 - **Flashcards and review:** cards written from the summary and highlights (plus your own), reviewed paper by paper whenever you like, hardest cards first.
-- **Library:** collections the AI proposes (and you can change), status, tags, and search across titles, topics and the full text of every paper. Each paper shows which library papers it cites, which cite it, and which are closest in content. A reference can be added to the library with one click.
+- **Library:** collections the AI proposes (and you can change), courses (asked when you add a paper, shown as tabs next to To read / Reading / Done), status, tags, and search across titles, topics and the full text of every paper. Each paper shows which library papers it cites, which cite it, and which are closest in content. A reference can be added to the library with one click.
 - **Export:** the original PDF with highlights and notes as annotations, or Markdown (summary, highlights, notes, questions, cards) for Obsidian, Notion and the like.
 - **Processing** of uploads and arXiv/DOI links is queued, and the queue survives restarts.
 - **Installable app (PWA)** with a Windows tray icon that shows whether the server is running and restarts it if it stops.
