@@ -897,3 +897,12 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
   .lib-side .lib-remove { grid-column: 1 / -1; justify-self: end; }
   .dialog-input { font-size: 16px; }
 }
+
+/* Inline formulas shown as crops of the PDF: the white of the crop takes on
+   the page's colour (and a highlight's), dark mode inverts the ink. */
+.paper img.inl-math { display: inline; max-width: none; mix-blend-mode: multiply; margin: 0 .05em; }
+:root[data-theme="dark"] .paper img.inl-math { filter: invert(1) hue-rotate(180deg); mix-blend-mode: screen; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .paper img.inl-math,
+  :root[data-theme="auto"] .paper img.inl-math { filter: invert(1) hue-rotate(180deg); mix-blend-mode: screen; }
+}

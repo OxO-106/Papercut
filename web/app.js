@@ -361,7 +361,7 @@ function toUtf16Offsets(paper) {
     const at = [0];
     for (const ch of s.text) at.push(at[at.length - 1] + ch.length);
     const conv = (x) => at[Math.min(x, at.length - 1)];
-    for (const key of ["bold", "italic", "sub", "sup", "math", "cites", "xrefs"]) {
+    for (const key of ["bold", "italic", "sub", "sup", "math", "cites", "xrefs", "formula"]) {
       if (s[key]) s[key] = s[key].map(([a, b, ...rest]) => [conv(a), conv(b), ...rest]);
     }
   }
@@ -390,6 +390,7 @@ function sentenceContent(span, s, sid) {
     ...(s.xrefs || []).map(([a, b, refs]) => ({ a, b, refs, cls: "xref" })),
   ].sort((x, y) => x.a - y.a);
   const bold = s.bold || [], italic = s.italic || [], sub = s.sub || [], sup = s.sup || [], math = s.math || [];
+  const formulas = (s.formula || []).filter(([, , fid]) => current?.formulas?.[fid]);
   const lines = (current?.underlines || []).filter((u) => u.sid === sid);
   const fixes = displayFixes(s.text);
   const cuts = new Set([0, s.text.length]);
@@ -397,6 +398,7 @@ function sentenceContent(span, s, sid) {
   for (const [a, b] of [...bold, ...italic, ...sub, ...sup, ...math]) cuts.add(a).add(b);
   for (const u of lines) cuts.add(u.a).add(u.b);
   for (const f of fixes) cuts.add(f.a).add(f.b);
+  for (const [a, b] of formulas) cuts.add(a).add(b);
   const points = [...cuts].filter((x) => x >= 0 && x <= s.text.length).sort((x, y) => x - y);
 
   let open = null; // current cite/xref element being filled
@@ -405,7 +407,8 @@ function sentenceContent(span, s, sid) {
     if (a === b) continue;
     let piece = s.text.slice(a, b);
     let range = [a, b];
-    const fix = fixes.find((f) => f.a <= a && b <= f.b);
+    const formula = formulas.find(([x, y]) => x <= a && b <= y);
+    const fix = !formula && fixes.find((f) => f.a <= a && b <= f.b);
     if (fix) { // the first piece of a fixed stretch shows the fix; the rest show nothing
       if (a !== fix.a) continue;
       piece = fix.text;
@@ -415,7 +418,10 @@ function sentenceContent(span, s, sid) {
     const mark = marks.find((m) => m.a <= a && b <= m.b);
     const within = (ranges) => ranges.some(([x, y]) => x <= a && b <= y);
     let node;
-    if (fix?.math) node = mathLetter(piece, range, fix);
+    if (formula) { // the first piece of a formula shows its crop; the rest show nothing
+      if (a !== formula[0]) continue;
+      node = formulaImg(formula, s.text);
+    } else if (fix?.math) node = mathLetter(piece, range, fix);
     else if (within(math)) node = mathText(piece, range, !!fix);
     else {
       node = document.createTextNode(piece);
@@ -440,6 +446,21 @@ function sentenceContent(span, s, sid) {
       span.append(node);
     }
   }
+}
+
+// An inline formula the PDF's text can't carry (stacked scripts, fractions,
+// accents), as a crop of the PDF set on the text's baseline. The text stays
+// as its alt text, for copying and screen readers.
+function formulaImg([a, b, fid], text) {
+  const f = current.formulas[fid];
+  const img = el("img", "inl-math");
+  img.src = `/api/papers/${current.id}/${f.image}`;
+  img.alt = text.slice(a, b);
+  img.style.height = `${f.h}em`;
+  img.style.width = `${f.w}em`;
+  img.style.verticalAlign = `${-f.d}em`;
+  img.draggable = false;
+  return img;
 }
 
 // A math letter written as an ordinary one: italic and/or bold as in the PDF.

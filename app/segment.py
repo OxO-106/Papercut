@@ -56,10 +56,12 @@ def _normalize(s: str) -> tuple[str, list[int]]:
     return "".join(out), idx
 
 
-def _align(tnorm: str, words: list[tuple]) -> tuple[dict[int, int], str, dict[int, int]]:
+def _align(tnorm: str, words: list[tuple], formula_of: dict | None = None) -> tuple[dict[int, int], str, dict[int, int]]:
     """Map normalized text positions to word indices, and to the code of
-    special characters (1 subscript, 2 superscript, plus 3 in a math font)."""
-    wchars, wmap, wkind = [], [], []
+    special characters (1 subscript, 2 superscript, plus 3 in a math font).
+    Positions in an inline formula shown as a crop are listed in `formula_of`
+    (text position -> formula id), filled when given."""
+    wchars, wmap, wkind, wform = [], [], [], []
     for wi, w in enumerate(words):
         n, idx = _normalize(w[5])
         wchars.append(n)
@@ -72,6 +74,13 @@ def _align(tnorm: str, words: list[tuple]) -> tuple[dict[int, int], str, dict[in
             wkind.extend(int(scripts[pos[i]]) if pos.get(i, len(scripts)) < len(scripts) else 0 for i in idx)
         else:
             wkind.extend([0] * len(n))
+        forms = w[9] if len(w) > 9 else None
+        if forms:
+            nonspace = [i for i, c in enumerate(w[5]) if not c.isspace()]
+            pos = {ci: k for k, ci in enumerate(nonspace)}
+            wform.extend(forms[pos[i]] if pos.get(i, len(forms)) < len(forms) else None for i in idx)
+        else:
+            wform.extend([None] * len(n))
     wnorm = "".join(wchars)
     t2w: dict[int, int] = {}
     t2k: dict[int, int] = {}
@@ -82,6 +91,8 @@ def _align(tnorm: str, words: list[tuple]) -> tuple[dict[int, int], str, dict[in
                 t2w[a + k] = wmap[b + k]
                 if wkind[b + k]:
                     t2k[a + k] = wkind[b + k]
+                if formula_of is not None and wform[b + k]:
+                    formula_of[a + k] = wform[b + k]
     return t2w, wnorm, t2k
 
 
@@ -125,7 +136,8 @@ def map_sentences(text: str, spans: list[tuple[int, int]], words: list[tuple]) -
     in a math font ("o_t ∈ O").
     """
     tnorm, tidx = _normalize(text)
-    t2w, _, t2k = _align(tnorm, words)  # text-normalized position -> word index, script kind
+    t2f: dict[int, str] = {}
+    t2w, _, t2k = _align(tnorm, words, t2f)  # text-normalized position -> word index, script kind, formula
 
     results = []
     pos = 0
@@ -160,6 +172,8 @@ def map_sentences(text: str, spans: list[tuple[int, int]], words: list[tuple]) -
             "sub": _script_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p, 0) % 3 == 1)),
             "sup": _script_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p, 0) % 3 == 2)),
             "math": _math_ranges(sentence, sorted(tidx[p] - start for p in range(first, pos) if t2k.get(p, 0) >= 3)),
+            "formula": _formula_ranges(sentence, [(tidx[p] - start, t2f[p]) for p in range(first, pos) if p in t2f],
+                                       {tidx[p] - start for p in range(first, pos) if p in t2w and p not in t2f}),
         }))
     return results
 
@@ -208,4 +222,61 @@ def _math_ranges(sentence: str, chars: list[int]) -> list[list[int]]:
     for r in out:  # take in brackets that close the formula: "π(a|c)" not "π(a|c"
         while r[1] < len(sentence) and sentence[r[1]] in ")]}|'′":
             r[1] += 1
+    return out
+
+
+_FORMULA_EDGE = set("\ufffd˜ˆ¯˙¨ˇ⌊⌋⌈⌉")
+
+
+def _formula_ranges(sentence: str, chars: list[tuple[int, str]], plain: set[int] = frozenset()) -> list[list]:
+    """[start, end, formula id] for each inline formula shown as a crop: from
+    its first to its last character found in the text, widened over the
+    characters beside it that match nothing else on the page (the rest of a
+    token, "˜ c" before "mp", accents and brackets the PDF has no match for),
+    which the crop shows. `plain`: positions matched to text outside any
+    formula. Overlapping stretches keep the first."""
+    span: dict[str, list[int]] = {}
+    for c, fid in chars:
+        r = span.setdefault(fid, [c, c + 1])
+        r[0], r[1] = min(r[0], c), max(r[1], c + 1)
+    out: list[list] = []
+    def loose(i):  # a character the crop can stand for
+        return i not in plain and not sentence[i].isspace()
+
+    def token(i, j):  # the stretch of non-spaces around [i, j)
+        while i > 0 and not sentence[i - 1].isspace():
+            i -= 1
+        while j < len(sentence) and not sentence[j].isspace():
+            j += 1
+        return i, j
+
+    for fid, (a, b) in sorted(span.items(), key=lambda x: x[1][0]):
+        # The rest of a short token ("cmp" when only "mp" matched).
+        ta, tb = token(a, a + 1)
+        if (tb - ta <= 4 and sentence[ta:a].isalnum()) or all(loose(i) and sentence[i].isalnum() for i in range(ta, a)):
+            a = ta
+        else:  # only letters and digits: an unmatched "=" or "(" before is text
+            while a > 0 and loose(a - 1) and sentence[a - 1].isalnum():
+                a -= 1
+        # An accented letter just before, which the crop shows: "˜𝑉 cmp", "˜ cmp".
+        while a > 1 and sentence[a - 1] == " ":
+            if sentence[a - 2] in _FORMULA_EDGE:  # "and˜ cmp": just the accent
+                a -= 2
+            elif a > 2 and sentence[a - 2].isalpha() and sentence[a - 3] in _FORMULA_EDGE:  # "˜𝑉 cmp"
+                a -= 3
+            else:
+                break
+        while a > 0 and sentence[a - 1] in _FORMULA_EDGE:
+            a -= 1
+        ta, tb = token(b - 1, b)
+        if tb - ta <= 4 or all(loose(i) for i in range(b, tb)):
+            b = tb
+        while b < len(sentence) and sentence[b] in _FORMULA_EDGE:
+            b += 1
+        # A closing bracket the PDF has no match for, after a space: "… ⌋", "… �".
+        while b + 1 < len(sentence) and sentence[b] == " " and sentence[b + 1] in _FORMULA_EDGE                 and (b + 2 == len(sentence) or not sentence[b + 2].isalnum()):
+            b += 2
+        if out and a < out[-1][1]:
+            continue
+        out.append([a, b, fid])
     return out

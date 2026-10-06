@@ -8,7 +8,7 @@ from typing import Callable
 
 import pymupdf as fitz
 
-from . import library
+from . import inline_math, library
 from .citations import Linker, clean_reference_entries
 from .config import CROP_DPI, SCHEMA_VERSION
 from .segment import _normalize, map_sentences, restore_spaces, split_sentences
@@ -395,7 +395,10 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
             continue
         emit({"type": kind, "text": text, "provs": _provs(item, doc), "region": region}, item)
 
-    words_by_page = _page_words(pdf)
+    display = {}  # display equations' boxes: inline formulas stay out of them
+    for page_no, box in eq_box.values():
+        display.setdefault(page_no, []).append(box)
+    words_by_page, page_formulas = _page_words(pdf, display)
     for b in raw:
         if b.get("provs") and b.get("text"):
             b["text"] = restore_spaces(b["text"], _words_in(words_by_page, b["provs"]))
@@ -500,6 +503,7 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
         if refs:
             s["xrefs"] = refs
 
+    formulas = _crop_formulas(pdf, paper_id, sentences, page_formulas)
     pdf.close()
     src = library.source_info(paper_id)
     return {
@@ -510,9 +514,34 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
         "status": {"parsed": True, "classified": False, "model": None, "error": None},
         "blocks": blocks,
         "sentences": sentences,
+        "formulas": formulas,
         "ai_labels": {},
         "user_edits": {},
     }
+
+
+def _crop_formulas(pdf: fitz.Document, paper_id: str, sentences: dict, found: dict) -> dict:
+    """Crop the inline formulas sentences show as images; drop the ranges of
+    any that can't be cropped. {id: {"image", "w", "h", "d"}} (sizes in em)."""
+    out = {}
+    for s in sentences.values():
+        keep = []
+        for a, b, fid in s.get("formula", []):
+            if fid not in out and fid in found:
+                f = found[fid]
+                got = inline_math.crop(pdf[f["page"] - 1], f, CROP_DPI)
+                if got:
+                    png, metrics = got
+                    name = inline_math.file_name(f["page"], f["k"], png)
+                    (library.assets_dir(paper_id) / name).write_bytes(png)
+                    out[fid] = {"image": f"assets/{name}", **metrics}
+            if fid in out:
+                keep.append([a, b, fid])
+        if keep:
+            s["formula"] = keep
+        else:
+            s.pop("formula", None)
+    return out
 
 
 def _pdf_title(pdf: fitz.Document) -> str | None:
@@ -1260,11 +1289,43 @@ def _word_scripts(w, scripts) -> str | None:
     return "".join(map(str, kinds)) if any(kinds) else None
 
 
-def _page_words(pdf: fitz.Document) -> dict[int, list[tuple]]:
-    """Every word with its box, line, font style (BOLD | ITALIC bits) and which
-    of its characters are subscripts or superscripts (see _word_scripts)."""
-    pages = {}
+def _word_formulas(w, fchars) -> list | None:
+    """For a word, the inline formula (see inline_math) each non-space
+    character belongs to ("<page>-<k>", or None); None if none does. The
+    word's characters are matched to the PDF's by identity, since a word's
+    box can hold characters of another (a fraction's denominator)."""
+    import unicodedata
+    from difflib import SequenceMatcher
+    x0, y0, x1, y1, text = w[0], w[1], w[2], w[3], w[4]
+    inside = sorted(((cx, k, ch) for cx, cy, k, ch in fchars if x0 - .5 <= cx <= x1 + .5 and y0 - .5 <= cy <= y1 + .5),
+                    key=lambda t: t[0])
+    if not any(k is not None for _, k, _ in inside):
+        return None
+    chars = [c for c in text if not c.isspace()]
+    if len(inside) == len(chars):
+        return [k for _, k, _ in inside]
+    # (glyphs with no Unicode are "�" in one text and a control character in
+    # the other: they match each other)
+    norm = lambda c: "�" if inline_math._hard(c) and c not in "˜ˆ¯˙¨ˇ" else unicodedata.normalize("NFKC", c)[:1].lower()
+    out = [None] * len(chars)
+    sm = SequenceMatcher(None, [norm(c) for c in chars], [norm(ch) for _, _, ch in inside], autojunk=False)
+    for a, b, n in sm.get_matching_blocks():
+        for i in range(n):
+            out[a + i] = inside[b + i][1]
+    return out if any(out) else None
+
+
+def _page_words(pdf: fitz.Document, display: dict | None = None) -> tuple[dict[int, list[tuple]], dict[str, dict]]:
+    """Every word with its box, line, font style (BOLD | ITALIC bits), which
+    of its characters are subscripts or superscripts (see _word_scripts) and
+    which belong to an inline formula shown as a crop (see inline_math);
+    and those formulas, keyed "<page>-<k>"."""
+    pages, formulas = {}, {}
     for pno, page in enumerate(pdf, start=1):
+        found, fchars = inline_math.page_formulas(page, _MATH_FONT, (display or {}).get(pno, []))
+        for k, f in enumerate(found):
+            formulas[f"{pno}-{k}"] = dict(f, page=pno, k=k)
+        fchars = [(cx, cy, None if k is None else f"{pno}-{k}", ch) for cx, cy, k, ch in fchars]
         scripts = _script_chars(page)
         styled = [
             (span["bbox"], st)
@@ -1279,10 +1340,11 @@ def _page_words(pdf: fitz.Document) -> dict[int, list[tuple]]:
             return next((st for b, st in styled if b[0] <= cx <= b[2] and b[1] <= cy <= b[3]), 0)
 
         pages[pno] = [
-            (pno, w[0], w[1], w[2], w[3], w[4], (w[5], w[6]), style(w), _word_scripts(w, scripts) if scripts else None)
+            (pno, w[0], w[1], w[2], w[3], w[4], (w[5], w[6]), style(w), _word_scripts(w, scripts) if scripts else None,
+             _word_formulas(w, fchars) if fchars else None)
             for w in page.get_text("words", sort=False)
         ]
-    return pages
+    return pages, formulas
 
 
 def _words_in(words_by_page, provs) -> list[tuple]:

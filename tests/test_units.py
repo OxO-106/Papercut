@@ -260,3 +260,22 @@ def test_markdown_underline_offsets_count_utf16():
     # The page counts 𝑡 as two units: "computes" starts at 10, not 9.
     assert _utf16_slice(text, 10, 18) == "computes"
     assert _utf16_slice(text, 6, 9) == "q𝑡"
+
+
+def test_formula_ranges_take_in_unmatched_accents_and_brackets():
+    from app.segment import _formula_ranges
+    s = "keys ˜ cmp 𝑡 and ⌊ 𝑠-𝑙 𝑑 ⌋ tokens"
+    c = s.index("mp")  # only "mp 𝑡" matched to the formula's characters
+    chars = [(c, "f1"), (c + 1, "f1"), (s.index("𝑡"), "f1")]
+    plain = set(range(0, 4)) | {s.index("and")}
+    (a, b, fid), = _formula_ranges(s, chars, plain)
+    assert s[a:b] == "˜ cmp 𝑡" and fid == "f1"
+    f = s.index("𝑠")
+    (a, b, _), = _formula_ranges(s, [(f, "f2"), (f + 2, "f2"), (s.index("𝑑"), "f2")], plain)
+    assert s[a:b] == "⌊ 𝑠-𝑙 𝑑 ⌋"
+
+
+def test_inline_formula_seeds():
+    from app.inline_math import _hard, _mathy
+    assert _hard("\x04") and _hard("�") and _hard("⌊") and _hard("˜")
+    assert _mathy("𝑡") and _mathy("α") and _mathy("∈") and not _mathy("a")
