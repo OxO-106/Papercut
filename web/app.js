@@ -280,10 +280,10 @@ async function openPaper(id, sid) {
   }
   let paper;
   try {
-    paper = await api(`/api/papers/${id}`);
+    paper = await loadPaperData(id);
   } catch (e) {
     if (!String(e).startsWith("409") || !(await waitUntilProcessed(id))) return;
-    paper = await api(`/api/papers/${id}`);
+    paper = await loadPaperData(id);
   }
   current = paper;
   current.links = {}; // reference block -> library paper (loadConnections)
@@ -335,13 +335,51 @@ const DISPLAY_FIXES = [
   [/↦\s*→/g, () => "↦"],
   [/ˆ\s?([A-Za-z])/g, (m, ch) => ch + "̂"],
   [/˜\s?([A-Za-z])/g, (m, ch) => ch + "̃"],
+  // Unicode's math letters (𝑡, 𝛼, 𝐪), which some PDFs use for variables:
+  // shown as ordinary letters in the math font, italic or bold as they were.
+  // Script, fraktur and double-struck letters (𝒜, 𝔤, 𝔼) keep their own shape.
+  [/[\u{1D400}-\u{1D4CF}\u{1D5A0}-\u{1D7D7}]/gu, (m) => ({ text: m.normalize("NFKC"), ...mathStyle(m.codePointAt(0)) })],
 ];
+
+// Bold / italic of a math letter, from its block in Mathematical Alphanumeric Symbols.
+function mathStyle(cp) {
+  const inn = (...rs) => rs.some(([a, b]) => cp >= a && cp <= b);
+  return {
+    math: true,
+    bold: inn([0x1D400, 0x1D433], [0x1D468, 0x1D49B], [0x1D5D4, 0x1D607], [0x1D63C, 0x1D66F], [0x1D6A8, 0x1D6E1], [0x1D71C, 0x1D755], [0x1D756, 0x1D7C9], [0x1D7CE, 0x1D7D7]),
+    italic: inn([0x1D434, 0x1D49B], [0x1D608, 0x1D66F], [0x1D6E2, 0x1D755], [0x1D790, 0x1D7C9]),
+  };
+}
+
+// The server counts characters; the page's strings count UTF-16 units, in
+// which a math letter like 𝑡 takes two. Convert the server's character
+// offsets in sentences that have such letters, so styles and citation links
+// land where they belong instead of splitting a letter in half.
+function toUtf16Offsets(paper) {
+  for (const s of Object.values(paper.sentences || {})) {
+    if (!/[\u{10000}-\u{10FFFF}]/u.test(s.text)) continue;
+    const at = [0];
+    for (const ch of s.text) at.push(at[at.length - 1] + ch.length);
+    const conv = (x) => at[Math.min(x, at.length - 1)];
+    for (const key of ["bold", "italic", "sub", "sup", "math", "cites", "xrefs"]) {
+      if (s[key]) s[key] = s[key].map(([a, b, ...rest]) => [conv(a), conv(b), ...rest]);
+    }
+  }
+  return paper;
+}
+
+async function loadPaperData(id) {
+  return toUtf16Offsets(await api(`/api/papers/${id}`));
+}
 const textRange = new WeakMap(); // text node -> [start, end) in the sentence's text
 
 function displayFixes(text) {
   const out = [];
   for (const [re, fn] of DISPLAY_FIXES) {
-    for (const m of text.matchAll(re)) out.push({ a: m.index, b: m.index + m[0].length, text: fn(...m) });
+    for (const m of text.matchAll(re)) {
+      const r = fn(...m);
+      out.push({ a: m.index, b: m.index + m[0].length, ...(typeof r === "string" ? { text: r } : r) });
+    }
   }
   return out.sort((x, y) => x.a - y.a).filter((f, i, all) => i === 0 || f.a >= all[i - 1].b);
 }
@@ -377,7 +415,8 @@ function sentenceContent(span, s, sid) {
     const mark = marks.find((m) => m.a <= a && b <= m.b);
     const within = (ranges) => ranges.some(([x, y]) => x <= a && b <= y);
     let node;
-    if (within(math)) node = mathText(piece, range, !!fix);
+    if (fix?.math) node = mathLetter(piece, range, fix);
+    else if (within(math)) node = mathText(piece, range, !!fix);
     else {
       node = document.createTextNode(piece);
       textRange.set(node, range);
@@ -401,6 +440,17 @@ function sentenceContent(span, s, sid) {
       span.append(node);
     }
   }
+}
+
+// A math letter written as an ordinary one: italic and/or bold as in the PDF.
+function mathLetter(piece, range, fix) {
+  const m = el("span", "math");
+  let node = document.createTextNode(piece);
+  textRange.set(node, range);
+  if (fix.italic) { const i = el("i"); i.append(node); node = i; }
+  if (fix.bold) { const b = el("b"); b.append(node); node = b; }
+  m.append(node);
+  return m;
 }
 
 // Math as typeset: letters (variables) italic, digits and operators upright,
@@ -2128,7 +2178,7 @@ async function showQuestionsView(id) {
   show("qview");
   clearTimeout(qviewTimer);
   if (current?.id !== id) {
-    try { current = await api(`/api/papers/${id}`); } catch (e) {
+    try { current = await loadPaperData(id); } catch (e) {
       $("qv-list").replaceChildren(el("p", "error", String(e.message || e)));
       return;
     }

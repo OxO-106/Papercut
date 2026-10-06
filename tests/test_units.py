@@ -235,3 +235,28 @@ def test_carry_over_matches_slightly_changed_text():
     carry_over(old, new)
     assert new["ai_labels"] == {"t1": old["ai_labels"]["s1"]}
     assert new["underlines"] == []  # offsets may have moved: dropped rather than misplaced
+
+
+def test_glued_caption_split_from_next_page():
+    from types import SimpleNamespace as NS
+    from app.parse import _split_glued_captions
+    text = "These Table 2 | Performance comparison between our NSA and baselines."
+    cut = text.index("Table")
+    page = NS(size=NS(height=800))
+    bbox = NS(to_top_left_origin=lambda page_height: NS(l=0, t=0, r=1, b=1))
+    item = NS(text=text, prov=[NS(page_no=10, charspan=(0, cut - 1), bbox=bbox),
+                               NS(page_no=11, charspan=(cut, len(text)), bbox=bbox)])
+    doc = NS(pages={10: page, 11: page})
+    parts = _split_glued_captions(item, doc)
+    assert [p[0] for p in parts] == ["These", text[cut:]]
+    assert [p[1][0][0] for p in parts] == [10, 11]
+    one_page = NS(text="Plain paragraph.", prov=[NS(page_no=3, charspan=(0, 16), bbox=bbox)])
+    assert _split_glued_captions(one_page, doc) is None
+
+
+def test_markdown_underline_offsets_count_utf16():
+    from app.markdown import _utf16_slice
+    text = "token q𝑡 computes"
+    # The page counts 𝑡 as two units: "computes" starts at 10, not 9.
+    assert _utf16_slice(text, 10, 18) == "computes"
+    assert _utf16_slice(text, 6, 9) == "q𝑡"

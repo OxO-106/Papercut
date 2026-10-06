@@ -59,6 +59,179 @@ def _provs(item, doc) -> list[tuple[int, tuple[float, float, float, float]]]:
     return out
 
 
+_EQ_NUMBER = re.compile(r"^\s*\(\s*[A-Z]?\d+[a-z]?\s*\)\s*$")
+
+
+def _is_prose_line(text: str, rect: fitz.Rect, prose: list) -> bool:
+    """A line of running text (from a paragraph Docling read), not math: at
+    least three words, most of them found in an overlapping text item."""
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{3,}", text)]
+    if len(words) < 3:
+        return False
+    for box, letters in prose:
+        if box.intersects(rect + (-3, -3, 3, 3)) and sum(w in letters for w in words) >= 0.7 * len(words):
+            return True
+    return False
+
+
+def _equation_box(page: fitz.Page, box, prose: list) -> tuple:
+    """Fit a display equation's crop to the equation itself. Docling's formula
+    boxes often take in a line of the paragraph above or below (cut in half)
+    and miss parts of the equation (a sum's limits, its number "(3)"). Use the
+    PDF's own lines: those inside the box that aren't running text, plus the
+    equation number on the right, and stop short of the prose lines."""
+    R = fitz.Rect(box)
+    lines = []
+    for blk in page.get_text("dict")["blocks"]:
+        for line in blk.get("lines", []):
+            lb = fitz.Rect(line["bbox"])
+            text = "".join(sp["text"] for sp in line["spans"]).strip()
+            if not text or lb.is_empty:
+                continue
+            cy = (lb.y0 + lb.y1) / 2
+            number = _EQ_NUMBER.match(text) and R.y0 <= cy <= R.y1 and R.x0 < lb.x0 < R.x1 + 80
+            # Inside: centred in the box (a little slack for a sum's limits),
+            # not just touching it (a tall inline ∏ from the paragraph above).
+            inside = lb.intersects(R) and R.y0 - 8 <= cy <= R.y1 + 8 and lb.height <= R.height + 24
+            if inside or number:
+                lines.append((lb, text))
+    # A row of text can come in pieces ("Likewise,", "H", "could be represented
+    # as:"): judge the row as a whole.
+    # Only pieces of text height take part (a tall ∑ or fraction would chain
+    # rows together), each compared with the row's first piece.
+    heights = sorted(lb.height for lb, _ in lines)
+    text_h = heights[len(heights) // 2] if heights else 0
+    rows: list[list] = []  # [first piece's rect, [(x, text)], piece rects]
+    for lb, t in lines:
+        if lb.height > 1.4 * text_h:
+            continue
+        for row in rows:
+            if min(lb.y1, row[0].y1) - max(lb.y0, row[0].y0) > 0.6 * min(lb.height, row[0].height):
+                row[1].append((lb.x0, t))
+                row[2].append(lb)
+                break
+        else:
+            rows.append([fitz.Rect(lb), [(lb.x0, t)], [lb]])
+    prose_rows = [lb for r, texts, pieces in rows
+                  if _is_prose_line(" ".join(t for _, t in sorted(texts)), _union(pieces), prose)
+                  for lb in pieces]
+    # Pieces of a prose line ("where", "M", "∈ R") sit on the same row as it.
+    # So do its raised and lowered bits (the i of γ^i), which overlap it less.
+    # A small bit touching a prose piece (a footnote mark "¹" before it) too.
+    same_row = lambda lb: any(
+        (min(lb.y1, p.y1) - max(lb.y0, p.y0) > 0.3 * min(lb.height, p.height)
+         and (lb.height < p.height or min(lb.y1, p.y1) - max(lb.y0, p.y0) > 0.6 * lb.height))
+        or (lb.height < 0.8 * p.height and min(lb.y1, p.y1) > max(lb.y0, p.y0)
+            and p.x0 - 4 <= lb.x1 and lb.x0 <= p.x1 + 4)
+        for p in prose_rows)
+    content = [lb for lb, t in lines if not same_row(lb)]
+    if not content:
+        return box
+    out = fitz.Rect(content[0])
+    for lb in content[1:]:
+        out |= lb
+    out &= fitz.Rect(R.x0 - 12, R.y0 - 14, max(R.x1, out.x1), R.y1 + 14)  # don't wander off
+    for p in prose_rows:  # never take in a prose line, even in part
+        if p.intersects(out):
+            # (2.5 pt clear of it: the crop adds 2 pt of margin)
+            if (p.y0 + p.y1) / 2 < (out.y0 + out.y1) / 2:
+                out.y0 = max(out.y0, p.y1 + 2.5)
+            else:
+                out.y1 = min(out.y1, p.y0 - 2.5)
+    if out.is_empty or out.height < 4:
+        return box
+    # Then just the equation's own lines within those bounds (not a footnote
+    # rule or blank space left between them and a prose line).
+    kept = [lb for lb in content if out.y0 <= (lb.y0 + lb.y1) / 2 <= out.y1]
+    if kept:
+        tight = fitz.Rect(kept[0])
+        for lb in kept[1:]:
+            tight |= lb
+        out &= tight
+    # Keep 2.5 pt clear of the prose lines above and below (the crop adds a
+    # 2 pt margin, which would catch their descenders and ascenders).
+    for p in prose_rows:
+        if p.x1 > out.x0 and p.x0 < out.x1:
+            if p.y1 <= (out.y0 + out.y1) / 2 and p.y1 + 2.5 > out.y0:
+                out.y0 = p.y1 + 2.5
+            elif p.y0 >= (out.y0 + out.y1) / 2 and p.y0 - 2.5 < out.y1:
+                out.y1 = p.y0 - 2.5
+    if out.is_empty or out.height < 4:
+        return box
+    return (out.x0, out.y0, out.x1, out.y1)
+
+
+def _union(rects) -> fitz.Rect:
+    out = fitz.Rect(rects[0])
+    for r in rects[1:]:
+        out |= r
+    return out
+
+
+def _mostly_inside(a, b) -> bool:
+    """Whether box a lies mostly (70%) within box b."""
+    a, b = fitz.Rect(a), fitz.Rect(b)
+    return a.get_area() > 0 and (a & b).get_area() >= 0.7 * a.get_area()
+
+
+def _split_glued_captions(item, doc) -> list[tuple[str, list]] | None:
+    """Docling joins a paragraph that runs over onto the next page with the
+    first text there, even when that is a table's caption ("…These Table 2 |
+    Performance comparison…"). Split such an item where a page's piece
+    starts a caption: [(text, provs)], or None if there is nothing to split."""
+    text = getattr(item, "text", "") or ""
+    prov = item.prov
+    cuts = [i for i, p in enumerate(prov) if i and _CAPTION_START.match(text[p.charspan[0]:])]
+    if not cuts:
+        return None
+    provs = _provs(item, doc)
+    bounds = [0, *cuts, len(prov)]
+    pieces = []
+    for a, b in zip(bounds, bounds[1:]):
+        start = prov[a].charspan[0] if a else 0
+        end = prov[b].charspan[0] if b < len(prov) else len(text)
+        if text[start:end].strip():
+            pieces.append((text[start:end].strip(), provs[a:b]))
+    return pieces
+
+
+def _trim_edge_strips(page: fitz.Page, box) -> tuple:
+    """Drop a thin strip of ink at the top or bottom edge of an equation's
+    crop that blank space separates from the equation: the descenders of
+    the line above, a footnote rule below (glyph boxes, such as an
+    underbrace's, are taller than their ink, so the box alone can't tell)."""
+    import numpy as np
+    x0, y0, x1, y1 = box
+    rect = fitz.Rect(x0 - 2, y0 - 2, x1 + 2, y1 + 2) & page.rect
+    if rect.is_empty:
+        return box
+    zoom = 4  # px per pt
+    pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csGRAY)
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+    ink = (img < 170).any(axis=1)
+    runs, start = [], None  # [first row, last row] of each band of ink
+    for i, v in enumerate(ink):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            runs.append([start, i - 1])
+            start = None
+    if start is not None:
+        runs.append([start, len(ink) - 1])
+    thin, gap = 2.2 * zoom, 2.5 * zoom
+    while len(runs) > 1 and runs[0][1] - runs[0][0] < thin and runs[1][0] - runs[0][1] > gap:
+        runs.pop(0)
+    while len(runs) > 1 and runs[-1][1] - runs[-1][0] < thin and runs[-1][0] - runs[-2][1] > gap:
+        runs.pop()
+    if not runs:
+        return box
+    # Edges at the ink kept (never wider than before); the crop adds its 2 pt
+    # margin, which the blank gap (> 2.5 pt) keeps clear of a dropped strip.
+    top = rect.y0 + runs[0][0] / zoom
+    bottom = rect.y0 + (runs[-1][1] + 1) / zoom
+    return (x0, max(y0, top - 0.3), x1, min(y1, bottom + 0.3))
+
+
 def _crop(pdf: fitz.Document, paper_id: str, name: str, prov) -> dict | None:
     """Render a region of the page to a PNG. None if it would be empty
     (a speck, or a blank area Docling mistook for a picture)."""
@@ -111,6 +284,32 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
             block["_pos"] = (page_no, *bbox)
         raw.append(block)
 
+    # Text on each page, for telling an equation from the prose Docling's
+    # formula boxes often overlap: {page: [(rect, its letters)]}.
+    prose: dict[int, list] = {}
+    formulas = []
+    for item, _level in doc.iterate_items():
+        if _label(item) == "formula" and item.prov:
+            formulas.append(item)
+        elif _label(item) not in ("picture", "chart", "table") and item.prov and getattr(item, "text", ""):
+            for page_no, box in _provs(item, doc):
+                prose.setdefault(page_no, []).append((fitz.Rect(box), re.sub(r"[^a-z]", "", item.text.lower())))
+    # Each equation's crop, fitted to the equation; a box that lies within a
+    # bigger one (Docling boxed a row, or a symbol, of an equation twice) is skipped.
+    eq_box = {}
+    for item in formulas:
+        page_no, box = _provs(item, doc)[0]
+        eq_box[item.self_ref] = (page_no, _equation_box(pdf[page_no - 1], box, prose.get(page_no, [])))
+    order = list(eq_box)
+    for ref in order:
+        page_no, box = eq_box[ref]
+        area = fitz.Rect(box).get_area()
+        # Inside a bigger box, or the same box as an earlier one.
+        if any(other != ref and p == page_no and _mostly_inside(box, b)
+               and (fitz.Rect(b).get_area() > area * 1.03 or order.index(other) < order.index(ref))
+               for other, (p, b) in list(eq_box.items())):
+            del eq_box[ref]
+
     for item, _level in doc.iterate_items():
         ref = item.self_ref
         parent = getattr(getattr(item, "parent", None), "cref", "") or ""
@@ -145,10 +344,15 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
         if label == "formula":
             if not item.prov:
                 continue
+            if ref not in eq_box:
+                continue
+            page_no, box = eq_box[ref]
             n_float += 1
-            crop = _crop(pdf, paper_id, f"eq-{n_float}", _provs(item, doc)[0])
+            box = _trim_edge_strips(pdf[page_no - 1], box)
+            crop = _crop(pdf, paper_id, f"eq-{n_float}", (page_no, box))
             if crop:
                 emit({"type": "equation", **crop, "region": region}, item)
+                raw[-1]["_pos"] = (page_no, *box)
             continue
 
         text = (getattr(item, "text", "") or "").strip()
@@ -183,6 +387,12 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
         }.get(label, "paragraph")
         if region == "references":
             kind = "references"
+        pieces = _split_glued_captions(item, doc) if kind == "paragraph" else None
+        if pieces:
+            for piece, provs in pieces:
+                raw.append({"type": kind, "text": piece, "provs": provs, "region": region,
+                            "_pos": (provs[0][0], *provs[0][1])})
+            continue
         emit({"type": kind, "text": text, "provs": _provs(item, doc), "region": region}, item)
 
     words_by_page = _page_words(pdf)

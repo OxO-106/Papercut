@@ -148,7 +148,7 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
             s_ = S.get(u["sid"])
             if s_:
                 page = _page(paper, u["sid"])
-                out.append(f"- {s_['text'][u['a']:u['b']]}" + (f" (p. {page})" if page else ""))
+                out.append(f"- {_utf16_slice(s_['text'], u['a'], u['b'])}" + (f" (p. {page})" if page else ""))
         out.append("")
 
     if "notes" in parts:
@@ -191,3 +191,9 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
 
     out += ["---", f"*Exported from Papercut on {time.strftime('%Y-%m-%d')}.*", ""]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out))
+
+
+def _utf16_slice(text: str, a: int, b: int) -> str:
+    """text[a:b] with a and b counted in UTF-16 units, as the page counts them
+    (a math letter like 𝑡 is two)."""
+    return text.encode("utf-16-le")[2 * a:2 * b].decode("utf-16-le", errors="ignore")
