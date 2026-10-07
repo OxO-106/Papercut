@@ -63,8 +63,11 @@ def generate(paper: dict, progress=lambda s, f: None) -> dict:
     s = paper.get("summary")
     if s:
         parts.append("Your summary:\n" + "\n".join(x for x in [
-            f"TL;DR: {s['tldr']}", f"Problem: {s['problem']}", f"Approach: {s['approach']}",
-            *("Result: " + r["text"] for r in s["results"]), *("Limitation: " + r["text"] for r in s["limitations"])] if x))
+            f"In brief: {s.get('tldr', '')}", f"Objective: {s.get('objective') or s.get('problem', '')}",
+            f"Approach: {s.get('approach', '')}", *("Term: " + f"{k['term']}: {k['definition']}" for k in s.get("key_terms", [])),
+            *("New: " + r["text"] for r in s.get("novelty", [])), *("Method: " + r["text"] for r in s.get("method", [])),
+            *("Result: " + r["text"] for r in s.get("results", [])),
+            *("Limitation: " + r["text"] for r in s.get("limitations", []))] if x.split(": ", 1)[-1]))
     elif paper.get("reading_notes"):
         parts.append("Your reading notes:\n" + paper["reading_notes"])
     qs = [q for q in (paper.get("insights") or {}).get("questions", []) if q.get("status") == "answered"]

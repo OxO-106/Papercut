@@ -156,9 +156,14 @@ def carry_over(old: dict, new: dict) -> None:
     move = lambda sids: [x for x in (by_text.get(old["sentences"].get(h, {}).get("text")) for h in sids or []) if x]
     if old.get("summary"):
         new["summary"] = old["summary"]
-        for key in ("results", "contributions", "limitations"):
+        for key in ("novelty", "method", "results", "contributions", "limitations"):
             for it in new["summary"].get(key, []):
                 it["highlights"] = move(it.get("highlights"))
+        # Related work points at reference entries: matched by their text.
+        old_refs = {b["id"]: b.get("text") for b in old["blocks"] if b["type"] == "references"}
+        new_refs = {b.get("text"): b["id"] for b in new["blocks"] if b["type"] == "references"}
+        for it in new["summary"].get("related_work", []):
+            it["refs"] = [new_refs[old_refs[r]] for r in it.get("refs", []) if old_refs.get(r) in new_refs]
     if old.get("cards"):
         new["cards"] = old["cards"]
         for c in new["cards"].get("cards", []):

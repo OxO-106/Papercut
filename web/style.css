@@ -553,9 +553,12 @@ button:disabled { opacity: .55; cursor: default; }
   border: 1px solid var(--rule); background: var(--bg); color: var(--fg);
 }
 .lib-head input:focus { outline: none; border-color: var(--accent); }
-.lib-tools { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: .9rem 0; flex-wrap: wrap; }
-.lib-status { grid-template-columns: repeat(4, auto); }
-.lib-status button { padding: .3rem .8rem; }
+.lib-tools { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: .9rem 0; }
+/* Status and course tabs: one row, each tab as wide as its label; a row too
+   long for the window scrolls sideways rather than wrapping. */
+.lib-status { display: flex; flex: none; }
+.lib-status button { flex: none; padding: .3rem .8rem; white-space: nowrap; }
+.lib-sort { flex: none; }
 .lib-sort { display: flex; gap: .5rem; align-items: center; font-size: .85rem; color: var(--muted); }
 .lib-sort select, .lib-sel {
   font: inherit; font-size: .82rem; padding: .25rem .4rem; border-radius: 6px; border: 1px solid var(--rule);
@@ -595,6 +598,18 @@ button.topic:hover { color: var(--fg); border-color: var(--muted); }
 .lib-side { display: flex; flex-direction: column; gap: .4rem; align-items: stretch; }
 .lib-counts { font-size: .74rem; color: var(--muted); line-height: 1.4; }
 .lib-empty { color: var(--muted); padding: 1rem .2rem; }
+/* Next class (Almanac's calendar): the course switch and the class's time above its papers */
+.class-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .2rem 0 .7rem; border-bottom: 1px solid var(--rule); }
+.class-switch { display: flex; }
+.class-switch button { padding: .25rem .8rem; white-space: nowrap; }
+.class-when { color: var(--muted); font-size: .88rem; }
+.plan-tag {
+  display: inline-flex; align-items: center; padding: .05rem .55rem; border-radius: 999px; font-size: .74rem; line-height: 1.6;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--bg); font-weight: 500;
+}
+.lib-missing { color: var(--muted); font-size: .86rem; padding: .8rem .2rem 0; }
+.lib-missing p { margin: 0 0 .2rem; }
+.lib-missing ul { margin: 0; padding-left: 1.2em; }
 .lib-inside { margin-top: 1.6rem; }
 .lib-inside h3 { font-size: .85rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .hit-group { padding: .6rem 0 .8rem; border-bottom: 1px solid var(--rule); }
@@ -611,8 +626,21 @@ button.topic:hover { color: var(--fg); border-color: var(--muted); }
 .s-tldr { margin: 0; padding: .6rem .8rem; border-left: 3px solid var(--accent); background: var(--bar-bg); border-radius: 0 6px 6px 0; }
 .s-sec h4, .s-conn h4 { margin: 0 0 .2rem; font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .s-sec p { margin: 0; }
-.s-sec ul { margin: 0; padding-left: 1.1em; }
+.s-sec ul, .s-sec ol { margin: 0; padding-left: 1.1em; }
+.s-sec ol { padding-left: 1.4em; }
 .s-sec li { margin-bottom: .3rem; }
+.s-sec h5, .s-conn h5 { margin: .7rem 0 .2rem; font-size: .8rem; font-weight: 600; }
+.s-conn h5:first-of-type { margin-top: .3rem; }
+.s-terms { margin: 0; }
+.s-terms div { margin-bottom: .3rem; }
+.s-terms dt, .s-terms dd { display: inline; margin: 0; }
+.s-terms dt { font-weight: 600; }
+.s-terms dt::after { content: ":"; }
+.s-oq li { margin-bottom: .6rem; }
+.s-oq .s-oq-q { font-weight: 600; }
+.s-oq-label { font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.s-conn-note { display: block; line-height: 1.5; margin-top: .1rem; }
+.chip.cite { cursor: help; }
 .s-conn { border-top: 1px solid var(--rule); padding-top: .8rem; }
 .s-conn-head { margin: .5rem 0 .1rem; font-size: .8rem; font-weight: 600; }
 .s-conn-list { margin: 0; padding-left: 1.1em; font-size: .86rem; }
@@ -620,6 +648,33 @@ button.topic:hover { color: var(--fg); border-color: var(--muted); }
 .s-conn-list a:hover { color: var(--accent); }
 .s-conn-extra { display: block; font-size: .74rem; color: var(--muted); line-height: 1.4; }
 .s-none, .summary .pending { color: var(--muted); margin: 0; font-size: .86rem; }
+/* Formulas the model wrote, in the paper's math font */
+.tm { font-family: "STIX Two Text", "STIX Two Math", "Cambria Math", var(--font-body); font-size: 1.04em; white-space: nowrap; }
+.tm .tm { font-size: inherit; }
+.tm sup, .tm sub { font-size: .72em; line-height: 0; }
+.tm sup { vertical-align: .5em; }
+.tm sub { vertical-align: -.25em; }
+
+/* ---------- Summary page: the summary in the paper's font and size ---------- */
+.qview.sview { max-width: var(--measure); }
+.sv-back { margin-bottom: 1.2rem; }
+.sview .qv-head h1, .sv-body { font-family: var(--font-body); }
+.sview .qv-head h1 { font-size: 1.8rem; font-weight: 700; }
+.sv-body { display: flex; flex-direction: column; gap: 1.4rem; font-size: var(--font-size); line-height: var(--line-height); }
+.sv-body .s-meta { font-size: .85em; }
+.sv-body .s-tldr { padding: .8rem 1.1rem; }
+.sv-body .s-sec h4, .sv-body .s-conn h4 { margin-bottom: .4rem; font-size: .8em; letter-spacing: .08em; }
+.sv-body .s-sec li { margin-bottom: .5rem; }
+.sv-body .chip, .sv-body .topic, .sv-body .q-head, .sv-body .q-progress, .sv-body .q-intro button { font-family: var(--font-ui); }
+.sv-body .chip { font-size: .62em; vertical-align: .15em; }
+.sv-body .q-head { font-size: .8rem; }
+.sv-body .s-conn-head { font-size: .85em; }
+.sv-body .s-conn-list { font-size: .9em; }
+.sv-body .s-conn-extra { font-size: .78em; }
+.sv-body .s-conn-note { font-size: .95em; line-height: var(--line-height); }
+.sv-body .s-sec h5, .sv-body .s-conn h5 { font-size: .85em; margin-top: 1rem; }
+.sv-body .s-oq-label { font-family: var(--font-ui); font-size: .62em; }
+.sv-body .s-terms div { margin-bottom: .45rem; }
 
 /* ---------- Flashcards panel ---------- */
 .cards { gap: .8rem; }
@@ -674,7 +729,7 @@ button.topic:hover { color: var(--fg); border-color: var(--muted); }
 .qv-list { display: flex; flex-direction: column; gap: 1rem; }
 .qv-list .q-card { padding: 1rem 1.1rem .8rem; }
 @media print {
-  .bar, .qv-actions, .q-follow, .chat-src, .chat-steps { display: none !important; }
+  .bar, .qv-actions, .sv-back, .q-follow, .chat-src, .chat-steps, .sv-body .chip, .sv-body .q-head button { display: none !important; }
   .qview { margin: 0; max-width: none; }
   .q-card { break-inside: avoid; }
 }
@@ -794,7 +849,6 @@ a.ref-act { color: var(--accent); }
   .lib-head { flex-direction: column; align-items: stretch; }
   .lib-head input { max-width: none; }
   .lib-tools { gap: .6rem; }
-  .lib-status { width: 100%; grid-template-columns: repeat(4, 1fr); }
   .lib-cols { flex-direction: row !important; flex-wrap: nowrap; overflow-x: auto; gap: .3rem; padding-bottom: .3rem; scrollbar-width: none; }
   .col-btn { flex: none; border: 1px solid var(--rule); border-radius: 999px; padding: .3rem .8rem; white-space: nowrap; }
   .col-org { flex: none; margin: 0 .3rem; white-space: nowrap; align-self: center; }
@@ -870,8 +924,11 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
 
 /* Courses: tabs next to the status ones, a tag on each paper, and the
    "which course?" dialog. */
-.lib-filters { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; min-width: 0; }
-.lib-courses { display: flex; gap: 4px; flex-wrap: wrap; padding-left: .6rem; border-left: 1px solid var(--rule); }
+.lib-filters { display: flex; flex-wrap: nowrap; gap: .6rem; align-items: center; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.lib-filters::-webkit-scrollbar { display: none; }
+/* More tabs past the right edge: fade it (set by app.js). */
+.lib-filters.more { mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent); }
+.lib-courses { display: flex; flex: none; gap: 4px; flex-wrap: nowrap; padding-left: .6rem; border-left: 1px solid var(--rule); }
 .lib-courses[hidden] { display: none; }
 .lib-courses button { padding: .3rem .8rem; white-space: nowrap; }
 .course-tag {
@@ -894,8 +951,8 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
 .dialog-input:focus { outline: none; border-color: var(--accent); }
 #course-paper { overflow-wrap: anywhere; }
 @media (max-width: 760px) {
-  .lib-filters { width: 100%; }
-  .lib-courses { width: 100%; flex-wrap: nowrap; overflow-x: auto; padding-left: 0; border-left: 0; scrollbar-width: none; }
+  .lib-tools { flex-wrap: wrap; }
+  .lib-filters { width: 100%; flex: none; }
   .lib-side .lib-remove { grid-column: 1 / -1; justify-self: end; }
   .dialog-input { font-size: 16px; }
 }

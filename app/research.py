@@ -146,6 +146,28 @@ def openalex_id(paper: dict) -> str | None:
     return wid
 
 
+def citing_works(paper: dict, per_sort: int = 5) -> list[dict]:
+    """Later work that cites the paper (OpenAlex): the most-cited (the
+    influential follow-ups) and the newest (where the field is now). Raises
+    httpx.HTTPError when OpenAlex can't be reached; [] if the paper isn't there."""
+    wid = openalex_id(paper)
+    if not wid:
+        return []
+    seen, works = set(), []
+    for sort in ("cited_by_count:desc", "publication_date:desc"):
+        r = _get("https://api.openalex.org/works", filter=f"cites:{wid}", sort=sort, per_page=per_sort, select=_OA_FIELDS)
+        for w in r.json().get("results", []):
+            if w["id"] not in seen:
+                seen.add(w["id"])
+                works.append(_openalex_work(w))
+    return works
+
+
+def search_works(query: str, n: int = 6) -> list[dict]:
+    """arXiv search (the public face of _arxiv_search)."""
+    return _arxiv_search(query, n)
+
+
 # ---- the tools
 
 TOOLS = [
@@ -232,18 +254,9 @@ class Toolbox:
         return self._papers(_arxiv_search(query, 6), "No papers found; try fewer or other keywords.")
 
     def _citing_papers(self) -> str:
-        wid = openalex_id(self.paper)
-        if not wid:
+        if not openalex_id(self.paper):
             return "This paper couldn't be found in OpenAlex, so its citations are unknown. Try search_papers instead."
-        # Most-cited (the influential follow-ups) and newest (where the field is now).
-        seen, works = set(), []
-        for sort in ("cited_by_count:desc", "publication_date:desc"):
-            r = _get("https://api.openalex.org/works", filter=f"cites:{wid}", sort=sort, per_page=5, select=_OA_FIELDS)
-            for w in r.json().get("results", []):
-                if w["id"] not in seen:
-                    seen.add(w["id"])
-                    works.append(_openalex_work(w))
-        return self._papers(works, "No citing papers found yet.")
+        return self._papers(citing_works(self.paper), "No citing papers found yet.")
 
     def _get_reference(self, n) -> str:
         refs = [b for b in self.paper["blocks"] if b["type"] == "references"]

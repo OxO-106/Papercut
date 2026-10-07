@@ -16,7 +16,7 @@ from fastapi import Body, FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ask, cards, catalog, explain, export, fetch, jobs, library, llm, markdown, refs, translate
+from . import almanac, ask, cards, catalog, explain, export, fetch, jobs, library, llm, markdown, refs, translate
 from .config import LIBRARY, WEB_DIR
 from .highlight import CATEGORIES, VERSION as HIGHLIGHTER_VERSION
 
@@ -505,10 +505,14 @@ def add_reference(paper_id: str, block_id: str):
 
 @app.get("/api/library")
 def get_library():
-    """Every paper with its shelf data, plus the collections and courses."""
+    """Every paper with its shelf data, plus the collections and courses, and
+    the papers each course's next class covers, from Almanac's calendar
+    ("next_class": {"available", "classes"}; see almanac.next_classes)."""
     cols = catalog.load_collections()
-    return {"papers": catalog.entries(), "collections": cols["collections"], "organized": cols.get("at"),
+    papers = catalog.entries()
+    return {"papers": papers, "collections": cols["collections"], "organized": cols.get("at"),
             "courses": catalog.courses(),
+            "next_class": almanac.next_classes(papers),
             "organize": jobs.status(jobs.side_key(jobs.LIBRARY_ID, "organize"))}
 
 

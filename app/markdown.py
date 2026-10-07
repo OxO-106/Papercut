@@ -95,13 +95,40 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
         return f" (p. {', '.join(map(str, pages))})" if pages else ""
 
     if "summary" in parts and s:
-        out += ["## Summary", "", f"**TL;DR.** {s['tldr']}", "", "### Problem", "", s["problem"], "",
-                "### Approach", "", s["approach"], ""]
-        for key, head in (("results", "Key results"), ("contributions", "Contributions"), ("limitations", "Limitations")):
-            if s.get(key):
-                out += [f"### {head}", ""] + [f"- {it['text']}{jumps(it.get('highlights'))}" for it in s[key]] + [""]
-        if s.get("open_questions"):
-            out += ["### Open questions", ""] + [f"- {q}" for q in s["open_questions"]] + [""]
+        refs = [b for b in paper["blocks"] if b["type"] == "references"]
+        ref_n = {b["id"]: n for n, b in enumerate(refs, 1)}
+        out += ["## Summary", "", f"**In brief.** {s['tldr']}", ""]
+        para = lambda head, text: [f"### {head}", "", text, ""] if text else []
+        bullets = lambda head, items: ([f"### {head}", ""] + items + [""]) if items else []
+        listed = lambda key: [f"- {it['text']}{jumps(it.get('highlights'))}" for it in s.get(key, [])]
+        out += para("Background", s.get("background"))
+        if s.get("key_terms"):
+            out += ["**Key terms**", ""] + [f"- **{k['term']}**: {k['definition']}" for k in s["key_terms"]] + [""]
+        out += para("Objective", s.get("objective")) + para("Problem", s.get("problem"))
+        out += bullets("What's new", listed("novelty")) + para("Approach", s.get("approach"))
+        out += bullets("Method", [f"{i}. {it['text']}{jumps(it.get('highlights'))}" for i, it in enumerate(s.get("method", []), 1)])
+        out += bullets("Key results", listed("results")) + bullets("Contributions", listed("contributions"))
+        out += bullets("Limitations", listed("limitations"))
+        out += bullets("Related work", [
+            f"- {it['text']}" + (f" [{', '.join(str(ref_n[r]) for r in it['refs'] if r in ref_n)}]" if it.get("refs") else "")
+            for it in s.get("related_work", [])])
+        if s.get("future_research") or s.get("open_questions"):
+            out += ["### What's next", ""]
+            if s.get("future_research"):
+                out += ["**Future research**", ""] + [f"- {x}" for x in s["future_research"]] + [""]
+            if s.get("open_questions"):
+                out += ["**Open questions**", ""]
+                for q in s["open_questions"]:
+                    out += [f"- {q}"] if isinstance(q, str) else [f"- **{q['q']}**", f"  *Proposed answer:* {q['answer']}"]
+                out += [""]
+        out += bullets("Later work", [
+            f"- [{w['title']}]({w['url']})" + (f" ({w['year']})" if w.get("year") else "") + f": {w['note']}"
+            for w in s.get("later_work", [])])
+        if s.get("library_notes"):
+            from . import catalog
+            entries = {pid: catalog._entry(pid) for pid in s["library_notes"]}
+            out += bullets("In your library", [f"- **{entries[pid]['title']}**: {note}"
+                                               for pid, note in s["library_notes"].items() if entries[pid]])
 
     notes_by_sid: dict[str, list[dict]] = {}
     for n in paper.get("notes", []):

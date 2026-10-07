@@ -9,5 +9,9 @@ WEB_DIR = ROOT / "web"
 LIBRARY = Path(os.environ.get("PAPER_READER_LIBRARY", ROOT.parent / "library")).resolve()
 PAPERS_DIR = LIBRARY / "papers"
 
+# Almanac (D:\Read\almanac), the planner: its calendar says which papers are
+# due to be read today. Read-only; Papercut never writes to it.
+ALMANAC_DB = Path(os.environ.get("PAPERCUT_ALMANAC_DB", ROOT.parent / "almanac" / "data" / "almanac.db")).resolve()
+
 SCHEMA_VERSION = 1
 CROP_DPI = 200

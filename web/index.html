@@ -122,7 +122,10 @@
   <aside id="spanel" class="chat" hidden aria-label="Summary of this paper">
     <div class="chat-head">
       <strong>Summary</strong>
-      <span><button id="spanel-close" type="button" class="panel-close" aria-label="Close">×</button></span>
+      <span>
+        <button id="spanel-window" type="button" class="link" title="Show the summary as a full page, in the paper's font">Full page</button>
+        <button id="spanel-close" type="button" class="panel-close" aria-label="Close">×</button>
+      </span>
     </div>
     <div id="summary" class="chat-log summary"></div>
   </aside>
@@ -216,6 +219,7 @@
         <div class="lib-filters">
           <div class="seg lib-status" id="lib-status" role="group" aria-label="Filter by status">
             <button type="button" data-v="all">All</button>
+            <button type="button" data-v="next" id="lib-next" title="The papers your next class covers, from Almanac's calendar. Switch between courses above the list." hidden>Next class <span class="count-muted"></span></button>
             <button type="button" data-v="to-read">To read</button>
             <button type="button" data-v="reading">Reading</button>
             <button type="button" data-v="done">Done</button>
@@ -265,6 +269,21 @@
       </span>
     </div>
     <div id="qv-list" class="questions qv-list"></div>
+  </main>
+
+  <main id="sview" class="qview sview" hidden>
+    <button id="sv-back" type="button" class="sv-back">← Back to the paper</button>
+    <div class="qv-head">
+      <div>
+        <p class="qv-kicker">Summary of</p>
+        <h1 id="sv-title"></h1>
+      </div>
+      <span class="qv-actions">
+        <button id="sv-md" type="button">Export Markdown</button>
+        <button id="sv-print" type="button">Print</button>
+      </span>
+    </div>
+    <div id="sv-body" class="summary sv-body"></div>
   </main>
 
   <main id="progress" class="progress" hidden>

@@ -18,6 +18,7 @@ import os
 import queue
 import threading
 import traceback
+import time
 
 import httpx
 
@@ -122,6 +123,24 @@ def _side(paper_id: str, kind: str) -> None:
         submit(LIBRARY_ID, kind="organize")  # file the new paper into a collection
 
 
+OLLAMA_WAIT = 30 * 60  # seconds a queued job waits for Ollama to come back
+
+
+def _side_waiting(paper_id: str, kind: str) -> None:
+    """A side job that waits out an Ollama restart (it was seen to stop for a
+    minute and fail every queued summary) instead of failing at once."""
+    waited = 0
+    while True:
+        try:
+            return _side(paper_id, kind)
+        except (httpx.ConnectError, httpx.RemoteProtocolError):
+            if waited >= OLLAMA_WAIT:
+                raise
+            _set(side_key(paper_id, kind), stage="Waiting for Ollama to start", progress=0.0)
+            time.sleep(30)
+            waited += 30
+
+
 def _explain(e: Exception, what: str = "Highlights") -> str:
     """Turn common AI failures into something the reader can act on."""
     cfg = llm.settings()
@@ -178,7 +197,7 @@ def _worker() -> None:
             what = {"insights": "Questions", "summary": "Summary", "cards": "Flashcards"}.get(kind, "Collections")
             try:
                 _set(key, state="running")
-                _side(paper_id, kind)
+                _side_waiting(paper_id, kind)
                 _set(key, state="done", stage="Ready", progress=1.0)
             except Exception as e:
                 traceback.print_exc()

@@ -1,8 +1,12 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const views = ["home", "progress", "reader", "review", "qview"];
+const views = ["home", "progress", "reader", "review", "qview", "sview"];
+// The questions or summary page: a window of its own, apart from the reader.
+const inSideWindow = () => !$("qview").hidden || !$("sview").hidden;
 let current = null; // loaded paper.json
+let renderedId = null; // the paper laid out in #paper (kept while its summary page shows)
+let readerPos = null; // the sentence the reader was at when the summary page opened
 
 function show(view) {
   for (const v of views) $(v).hidden = v !== view;
@@ -134,11 +138,13 @@ window.addEventListener("hashchange", route);
 // #/                          library
 // #/paper/<id>                the reader; #/paper/<id>/s/<sid> opens it at a sentence
 // #/paper/<id>/questions      the questions on their own (a separate window)
+// #/paper/<id>/summary        the summary as a full page (a separate tab)
 // #/review, #/review/<id>     flashcard review, across the library or for one paper
 function route() {
   const h = location.hash;
   let m;
   if ((m = h.match(/^#\/paper\/([a-f0-9]+)\/questions/))) showQuestionsView(m[1]);
+  else if ((m = h.match(/^#\/paper\/([a-f0-9]+)\/summary/))) showSummaryView(m[1]);
   else if ((m = h.match(/^#\/paper\/([a-f0-9]+)(?:\/s\/(s\d+))?/))) openPaper(m[1], m[2]);
   else if ((m = h.match(/^#\/review(?:\/([a-f0-9]+))?/))) showReview(m[1]);
   else showHome();
@@ -149,6 +155,7 @@ async function showHome() {
   show("home");
   document.title = "Papercut";
   current = null;
+  renderedId = null;
   await loadLibrary();
 }
 
@@ -280,6 +287,15 @@ async function openPaper(id, sid) {
     if (sid) jumpToSentence(sid);
     return;
   }
+  if (current?.id === id && renderedId === id) { // back from the summary page: the paper is still laid out
+    show("reader");
+    document.title = current.meta.title;
+    if (sid) {
+      history.replaceState(null, "", `#/paper/${id}`);
+      requestAnimationFrame(() => jumpToSentence(sid));
+    } else if (!(readerPos && scrollToPosition(readerPos))) window.scrollTo(0, 0);
+    return;
+  }
   let paper;
   try {
     paper = await loadPaperData(id);
@@ -296,6 +312,7 @@ async function openPaper(id, sid) {
   $("paper").hidden = false;
   setOriginalShown(false);
   render(paper);
+  renderedId = id;
   applyHighlights();
   renderNotice();
   editingId = null;
@@ -320,6 +337,90 @@ function el(tag, cls, text) {
   if (cls) e.className = cls;
   if (text != null) e.textContent = text;
   return e;
+}
+
+// Formulas in text the model wrote (the summary). It writes them in LaTeX
+// between dollar signs ("$L \propto N^{-0.076}$") or as plain text
+// ("L ~ N^-0.076", "x_{t-1}"); either way they are typeset in the paper's math
+// font: scripts raised, variables italic, minus signs and relations as their
+// proper symbols.
+const TEX = {
+  alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", varepsilon: "ε", zeta: "ζ", eta: "η", theta: "θ",
+  kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", xi: "ξ", pi: "π", rho: "ρ", sigma: "σ", tau: "τ", phi: "φ", varphi: "φ",
+  chi: "χ", psi: "ψ", omega: "ω", Gamma: "Γ", Delta: "Δ", Theta: "Θ", Lambda: "Λ", Pi: "Π", Sigma: "Σ", Phi: "Φ",
+  Psi: "Ψ", Omega: "Ω", sim: "∼", propto: "∝", approx: "≈", times: "×", cdot: "·", le: "≤", leq: "≤", ge: "≥",
+  geq: "≥", ne: "≠", neq: "≠", pm: "±", infty: "∞", to: "→", rightarrow: "→", leftarrow: "←", sum: "∑", prod: "∏",
+  in: "∈", nabla: "∇", partial: "∂", ll: "≪", gg: "≫", ldots: "…", cdots: "⋯", mid: "|", star: "⋆", circ: "∘",
+};
+// A term is a letter or number with optional scripts; a formula is terms joined
+// by relations ("N ~ C^0.73", "N^0.74/D") and counts as one only if some term
+// has a script, so "I/O" or "(N)" in prose stay as they are.
+const SCRIPT = String.raw`(?:\{[^{}]*\}|[-−+]?\d+(?:\.\d+)?|[-−+]?[A-Za-zΑ-ω][A-Za-z0-9]*)`;
+const TERM = String.raw`(?:[A-Za-zΑ-ω]|\d+(?:\.\d+)?)(?:[\^_]${SCRIPT})*(?![\p{L}\p{N}])`;
+const REL = String.raw`\s*[~∼∝≈=/×·<>≤≥]\s*`;
+const FORMULA = new RegExp(String.raw`(?<![\p{L}\p{N}_\\.])${TERM}(?:${REL}${TERM})*`, "gu");
+const TERM_PARTS = new RegExp(String.raw`(${REL})|([A-Za-zΑ-ω]|\d+(?:\.\d+)?)((?:[\^_]${SCRIPT})*)`, "gu");
+
+function typesetMath(text) {
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  for (const m of String(text ?? "").matchAll(/\$([^$\n]+)\$/g)) {
+    frag.append(mathRun(text.slice(last, m.index)));
+    const box = el("span", "tm");
+    box.append(mathRun(delatex(m[1]), true));
+    frag.append(box);
+    last = m.index + m[0].length;
+  }
+  frag.append(mathRun(String(text ?? "").slice(last)));
+  return frag;
+}
+
+// Scripted terms (N^-0.1, x_{t-1}) typeset; with `whole` (inside $…$) the
+// rest is math too, and every single letter a variable.
+function mathRun(text, whole = false) {
+  const frag = document.createDocumentFragment();
+  text = text.replace(/ ~ /g, " ∼ ").replace(/<=/g, "≤").replace(/>=/g, "≥");
+  let last = 0;
+  for (const m of text.matchAll(FORMULA)) {
+    if (!/[\^_]/.test(m[0])) continue;
+    frag.append(variables(text.slice(last, m.index), whole));
+    const box = el("span", "tm");
+    for (const [, rel, base, scripts] of m[0].matchAll(TERM_PARTS)) {
+      if (rel) { box.append(rel.replace("~", "∼")); continue; }
+      box.append(variables(base, true));
+      for (const [, kind, s] of scripts.matchAll(new RegExp(String.raw`([\^_])(${SCRIPT})`, "gu"))) {
+        const t = el(kind === "^" ? "sup" : "sub");
+        t.append(variables(delatex(s.replace(/^\{|\}$/g, "")).replace(/(^|[\s(])-|-(?=[\d.\s])/g, (x) => x.replace("-", "−")), true));
+        box.append(t);
+      }
+    }
+    frag.append(box);
+    last = m.index + m[0].length;
+  }
+  frag.append(variables(text.slice(last), whole));
+  return frag;
+}
+
+function variables(text, whole) {
+  if (!whole) return document.createTextNode(text);
+  const frag = document.createDocumentFragment();
+  for (const [i, part] of text.replace(/[{}]/g, "").split(/(?<![A-Za-z])([A-Za-z])(?![A-Za-z])/).entries()) {
+    if (part) frag.append(i % 2 ? el("i", null, part) : part);
+  }
+  return frag;
+}
+
+function delatex(s) {
+  const wrap = (x) => (/^[\w.]+$/.test(x) ? x : `(${x})`);
+  for (let prev; prev !== s;) {
+    prev = s;
+    s = s.replace(/\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}/g, (_, a, b) => `${wrap(a)}/${wrap(b)}`);
+  }
+  return s.replace(/\\sqrt\{([^{}]*)\}/g, (_, x) => `√${wrap(x)}`)
+    .replace(/\\(?:mathrm|text|textrm|textit|mathbf|mathit|mathcal|mathbb|operatorname|boldsymbol)\{([^{}]*)\}/g, "$1")
+    .replace(/\\(?:left|right|big|Big)\b/g, "")
+    .replace(/\\[,;:! ]/g, " ").replace(/\\([%&#_$])/g, "$1")
+    .replace(/\\([A-Za-z]+)/g, (m, name) => TEX[name] ?? name);
 }
 
 // Sentence text with citations (<span class="cite">), figure/table mentions
@@ -1805,7 +1906,11 @@ function setChatOpen(open) {
 $("chat-close").addEventListener("click", () => setChatOpen(false));
 
 function jumpToSentence(sid) {
-  if (!$("qview").hidden && current) { // the questions window: jump in the reader window
+  if (!$("sview").hidden && current) { // the summary page: back to the paper, at this sentence
+    location.hash = `#/paper/${current.id}${sid ? `/s/${sid}` : ""}`;
+    return;
+  }
+  if (inSideWindow() && current) { // the questions window: jump in the reader window
     toReader({ type: "jump", paper: current.id, sid }, `#/paper/${current.id}${sid ? `/s/${sid}` : ""}`);
     return;
   }
@@ -2160,7 +2265,7 @@ function questionCard(q) {
 }
 
 function followUp(text) {
-  if (!$("qview").hidden) { // the questions window: ask in the reader window
+  if (inSideWindow()) { // the questions window: ask in the reader window
     toReader({ type: "ask", paper: current.id, text }, `#/paper/${current.id}`);
     return;
   }
@@ -2342,7 +2447,7 @@ async function loadConnections() {
   if (current?.id !== id) return;
   for (const [block, pid] of Object.entries(current.ref_links || {})) current.links[block] ||= pid;
   decorateRefs();
-  if (openPanelName === "spanel") renderConnections();
+  if (openPanelName === "spanel" || !$("sview").hidden) renderConnections();
 }
 
 // ---------- The original PDF ----------
@@ -2459,8 +2564,12 @@ function loadSummary() {
 async function startSummary() {
   if (!current) return;
   await api(`/api/papers/${current.id}/summary`, { method: "POST" }).catch(() => {});
-  loadSummary();
+  if ($("sview").hidden) loadSummary();
+  else showSummaryView(current.id);
 }
+
+// The summary panel's content, or the summary page's when that is showing.
+const summaryBox = () => ($("sview").hidden ? $("summary") : $("sv-body"));
 
 function pageOf(sid) {
   return current.sentences[sid]?.rects?.[0]?.page;
@@ -2480,14 +2589,28 @@ function jumpChips(sids) {
   return frag;
 }
 
-function renderSummary(s, st) {
-  const box = $("summary");
+// Chips after a related-work line: the reference entries it is about, shown
+// in the citation pop-up on hover (with "Add to library" / "Open in Papercut").
+function refChips(blocks) {
+  const frag = document.createDocumentFragment();
+  const refs = current.blocks.filter((b) => b.type === "references").map((b) => b.id);
+  for (const id of blocks || []) {
+    const n = refs.indexOf(id) + 1;
+    if (!n) continue;
+    const c = el("span", "chip cite", `[${n}]`);
+    c.dataset.refs = id;
+    frag.append(" ", c);
+  }
+  return frag;
+}
+
+function renderSummary(s, st, box = $("summary")) {
   box.replaceChildren();
   const running = jobProgress(box, st, "Written from the AI's reading notes and highlights; about a minute.");
   if (!s) {
     if (!running) {
       const intro = el("div", "q-intro");
-      intro.append(el("p", null, "A one-page cheat sheet of the paper: the problem, the approach, the key results with their numbers, the contributions, the limitations and the questions it leaves open. Each point links back to the sentences it rests on."));
+      intro.append(el("p", null, "The paper explained for someone who hasn't read it: the background and key terms, what it set out to do, what's new, how it was done, the results with their numbers, its limitations, the work around it, and what comes next. Each point links back to the sentences it rests on."));
       if (current.status?.classified) {
         const go = el("button", "q-go", "Write the summary");
         go.type = "button";
@@ -2508,28 +2631,74 @@ function renderSummary(s, st) {
     box.append(t);
   }
   const tl = el("p", "s-tldr");
-  tl.append(el("strong", null, "TL;DR "), s.tldr);
+  tl.append(el("strong", null, "In brief "), typesetMath(s.tldr));
   box.append(tl);
-  const section = (title, node) => {
+  const para = (text) => {
+    const p = el("p");
+    p.append(typesetMath(text));
+    return p;
+  };
+  const section = (title, ...nodes) => {
     const sec = el("section", "s-sec");
-    sec.append(el("h4", null, title), node);
+    sec.append(el("h4", null, title), ...nodes);
     box.append(sec);
   };
-  const list = (items) => {
-    const ul = el("ul");
+  const list = (items, tag = "ul") => {
+    const ul = el(tag);
     for (const it of items) {
-      const li = el("li", null, it.text ?? it);
+      const li = el("li");
+      li.append(typesetMath(it.text ?? it));
       if (it.highlights) li.append(jumpChips(it.highlights));
+      if (it.refs) li.append(refChips(it.refs));
       ul.append(li);
     }
     return ul;
   };
-  if (s.problem) section("Problem", el("p", null, s.problem));
-  if (s.approach) section("Approach", el("p", null, s.approach));
+  if (s.background || s.key_terms?.length) {
+    const nodes = s.background ? [para(s.background)] : [];
+    if (s.key_terms?.length) {
+      const dl = el("dl", "s-terms");
+      for (const k of s.key_terms) {
+        const row = el("div"), dt = el("dt"), dd = el("dd");
+        dt.append(typesetMath(k.term));
+        dd.append(typesetMath(k.definition));
+        row.append(dt, " ", dd);
+        dl.append(row);
+      }
+      nodes.push(el("h5", null, "Key terms"), dl);
+    }
+    section("Background", ...nodes);
+  }
+  if (s.objective) section("Objective", para(s.objective));
+  if (s.problem) section("Problem", para(s.problem)); // summaries written before version 2
+  if (s.novelty?.length) section("What's new", list(s.novelty));
+  if (s.approach) section("Approach", para(s.approach));
+  if (s.method?.length) section("Method", list(s.method, "ol"));
   if (s.results?.length) section("Key results", list(s.results));
   if (s.contributions?.length) section("Contributions", list(s.contributions));
   if (s.limitations?.length) section("Limitations", list(s.limitations));
-  if (s.open_questions?.length) section("Open questions", list(s.open_questions));
+  if (s.related_work?.length) section("Related work", list(s.related_work));
+  if (s.future_research?.length || s.open_questions?.length) {
+    const nodes = [];
+    if (s.future_research?.length) nodes.push(el("h5", null, "Future research"), list(s.future_research));
+    if (s.open_questions?.length) {
+      nodes.push(el("h5", null, "Open questions"));
+      const ul = el("ul", "s-oq");
+      for (const q of s.open_questions) {
+        const li = el("li");
+        if (typeof q === "string") li.append(typesetMath(q));
+        else {
+          const ask = el("p", "s-oq-q"), ans = el("p", "s-oq-a");
+          ask.append(typesetMath(q.q));
+          ans.append(el("span", "s-oq-label", "Proposed answer "), typesetMath(q.answer));
+          li.append(ask, ans);
+        }
+        ul.append(li);
+      }
+      nodes.push(ul);
+    }
+    section("What's next", ...nodes);
+  }
   const foot = el("div", "q-head");
   const when = s.at ? new Date(s.at * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "";
   foot.append(el("span", null, `Written by the local model${when ? ` · ${when}` : ""}`));
@@ -2544,15 +2713,43 @@ function renderSummary(s, st) {
 }
 
 function renderConnections() {
-  const box = $("summary").querySelector(".s-conn");
+  const box = summaryBox().querySelector(".s-conn");
   if (!box || !current) return;
-  box.replaceChildren(el("h4", null, "In your library"));
-  const c = current.connections;
+  const s = current.summary || {};
+  box.replaceChildren(el("h4", null, "Connections"), el("h5", null, "In your library"));
+  libraryConnections(box, current.connections, s.library_notes || {});
+  if (!s.later_work) return; // summaries written before version 2
+  box.append(el("h5", null, "Beyond your library"));
+  if (!s.later_work.length) {
+    box.append(el("p", "s-none", "No later work was found when the summary was written."));
+    return;
+  }
+  box.append(el("p", "s-conn-head", s.later_how === "related" ? "Later work on the same subject" : "Later work that cites it"));
+  const ul = el("ul", "s-conn-list");
+  for (const w of s.later_work) {
+    const li = el("li");
+    const a = el("a", null, w.title);
+    a.href = w.url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    li.append(a);
+    const meta = [w.year, w.cited_by != null ? `cited by ${w.cited_by.toLocaleString()}` : ""].filter(Boolean).join(" · ");
+    if (meta) li.append(el("span", "s-conn-extra", meta));
+    const note = el("span", "s-conn-note");
+    note.append(typesetMath(w.note));
+    li.append(note);
+    ul.append(li);
+  }
+  box.append(ul);
+}
+
+function libraryConnections(box, c, notes) {
   if (c === undefined) { box.append(el("p", "pending", "Looking for connections…")); return; }
   if (!c || (!c.cites.length && !c.cited_by.length && !c.related.length)) {
     box.append(el("p", "s-none", "No other papers in your library connect to this one yet."));
     return;
   }
+  const noted = new Set();
   const group = (title, items, extra) => {
     if (!items.length) return;
     box.append(el("p", "s-conn-head", title));
@@ -2564,6 +2761,12 @@ function renderConnections() {
       li.append(a);
       const more = extra(it);
       if (more) li.append(el("span", "s-conn-extra", more));
+      if (notes[it.id] && !noted.has(it.id)) { // once, where the paper first appears
+        noted.add(it.id);
+        const note = el("span", "s-conn-note");
+        note.append(typesetMath(notes[it.id]));
+        li.append(note);
+      }
       ul.append(li);
     }
     box.append(ul);
@@ -2573,6 +2776,40 @@ function renderConnections() {
   group("Closest in content", c.related.filter((x) => x.score >= 0.6),
         (x) => `${Math.round(x.score * 100)}% similar` + (x.shared.length ? ` · ${x.shared.join(", ")}` : ""));
 }
+
+// The summary as a full page in the reader's window, set in the paper's font.
+// "Back to the paper" (or the browser's Back) returns to where you were; its
+// page chips go back to the paper at that sentence.
+$("spanel-window").addEventListener("click", () => {
+  if (!current) return;
+  readerPos = $("reader").hidden ? null : readingPosition();
+  location.hash = `#/paper/${current.id}/summary`;
+});
+
+let sviewTimer = null;
+async function showSummaryView(id) {
+  show("sview");
+  clearTimeout(sviewTimer);
+  if (current?.id !== id) {
+    renderedId = null;
+    try { current = await loadPaperData(id); } catch (e) {
+      $("sv-body").replaceChildren(el("p", "error", String(e.message || e)));
+      return;
+    }
+    current.links = {};
+  }
+  document.title = `Summary · ${current.meta.title}`;
+  $("sv-title").textContent = current.meta.title;
+  if (current.connections === undefined) loadConnections();
+  const data = await api(`/api/papers/${id}/summary`).catch((e) => ({ status: { state: "error", error: String(e.message || e) } }));
+  if ($("sview").hidden || current?.id !== id) return;
+  if (data.summary) current.summary = data.summary;
+  renderSummary(data.summary, data.status, $("sv-body"));
+  if (["queued", "running"].includes(data.status?.state)) sviewTimer = setTimeout(() => showSummaryView(id), 3000);
+}
+$("sv-back").addEventListener("click", () => current && (location.hash = `#/paper/${current.id}`));
+$("sv-md").addEventListener("click", () => current && downloadMarkdown(current.id, ["summary"]));
+$("sv-print").addEventListener("click", () => window.print());
 
 // ---------- Flashcards ----------
 function loadCards() {
@@ -2846,7 +3083,8 @@ document.addEventListener("keydown", (e) => {
 // over titles, authors, topics and summaries, and after a pause through the
 // text of every paper.
 let lib = { papers: [], collections: [] };
-const libView = { status: "all", course: null, col: null, q: "" }; // col: null = all, "" = none, else a name
+// col: null = all, "" = none, else a name; klass: the next class shown (not saved: it opens on the soonest)
+const libView = { status: "all", course: null, col: null, q: "", klass: null };
 try { Object.assign(libView, JSON.parse(localStorage.getItem("libView") || "{}"), { q: "" }); } catch {}
 let libTimer = null, searchTimer = null, searchRun = 0;
 
@@ -2877,7 +3115,18 @@ function libMatches(p, q) {
 function renderLibrary() {
   const papers = lib.papers;
   $("lib-count").textContent = papers.length ? `(${papers.length})` : "";
+  // Next class: the papers each course's next class covers, from Almanac's
+  // calendar. Opens on the soonest class; the switch above the list picks another.
+  const classes = lib.next_class?.classes || [];
+  if (libView.status === "today") libView.status = "next"; // the tab's old name
+  if (libView.status === "next" && !classes.length) libView.status = "all";
+  if (!classes.some((c) => c.label === libView.klass)) libView.klass = classes[0]?.label ?? null;
+  const klass = classes.find((c) => c.label === libView.klass);
+  nextOf = new Map(classes.flatMap((c) => c.papers.map((id) => [id, c])));
+  $("lib-next").hidden = !classes.length;
+  $("lib-next").querySelector(".count-muted").textContent = klass ? String(klass.papers.length + klass.missing.length) : "";
   for (const b of $("lib-status").children) b.setAttribute("aria-pressed", String(b.dataset.v === libView.status));
+  requestAnimationFrame(fadeTabs);
   // Course tabs, next to the status ones: a second click shows every course again.
   const courses = lib.courses || [];
   if (libView.course && !courses.includes(libView.course)) libView.course = null;
@@ -2948,16 +3197,81 @@ function renderLibrary() {
     title: (a, b) => a.title.localeCompare(b.title),
     year: (a, b) => (b.year || "0").localeCompare(a.year || "0") || a.title.localeCompare(b.title),
   }[sort];
-  const shown = papers
-    .filter((p) => libView.status === "all" || p.status === libView.status)
-    .filter((p) => !libView.course || p.course === libView.course)
-    .filter((p) => libView.col === null || (p.collection || "") === libView.col)
-    .filter((p) => libMatches(p, libView.q))
-    .sort(cmp);
+  // The next class lists its own papers, in Almanac's order (the course and
+  // collection filters don't apply).
+  const next = libView.status === "next" ? klass : null;
+  const shown = next
+    ? next.papers.map((id) => papers.find((p) => p.id === id)).filter((p) => p && libMatches(p, libView.q))
+    : papers
+      .filter((p) => libView.status === "all" || p.status === libView.status)
+      .filter((p) => !libView.course || p.course === libView.course)
+      .filter((p) => libView.col === null || (p.collection || "") === libView.col)
+      .filter((p) => libMatches(p, libView.q))
+      .sort(cmp);
   const list = $("lib-list");
   list.replaceChildren(...shown.map(libRow));
+  if (next) list.prepend(classHead(classes, next));
   if (!papers.length) list.append(el("p", "lib-empty", "No papers yet. Drop a PDF above or paste a link."));
-  else if (!shown.length) list.append(el("p", "lib-empty", libView.q ? "No titles, authors or topics match. Matches inside your papers are below." : "No papers here."));
+  else if (!shown.length) list.append(el("p", "lib-empty", libView.q ? "No titles, authors or topics match. Matches inside your papers are below."
+    : next ? (next.missing.length ? "None of this class's papers are in your library yet." : "No papers for this class.") : "No papers here."));
+  if (next?.missing.length) {
+    const m = el("div", "lib-missing");
+    m.append(el("p", null, shown.length ? "Also covered, but not in your library yet:" : "Covered in this class:"));
+    const ul = el("ul");
+    for (const t of next.missing) ul.append(el("li", null, t));
+    m.append(ul);
+    list.append(m);
+  }
+}
+
+// Above the next class's papers: a switch between the courses, and when the class is.
+function classHead(classes, cur) {
+  const head = el("div", "class-head");
+  if (classes.length > 1) {
+    const seg = el("div", "seg class-switch");
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "Course");
+    for (const c of classes) {
+      const b = el("button", null, c.label);
+      b.type = "button";
+      b.title = `${c.course} with ${c.instructor}: next class ${classWhen(c)}`;
+      b.setAttribute("aria-pressed", String(c === cur));
+      b.addEventListener("click", () => { libView.klass = c.label; renderLibrary(); });
+      seg.append(b);
+    }
+    head.append(seg);
+  }
+  head.append(el("span", "class-when", `${classes.length > 1 ? "" : `${cur.label} · `}${classWhen(cur)}`));
+  return head;
+}
+
+// "Today, 4:00 – 5:50 PM", "Tomorrow, 10:00 – 11:50 AM", "Mon, Oct 12, 4:00 – 5:50 PM".
+function classWhen(c) {
+  const at = (t) => new Date(`${c.date}T${t}`);
+  const day = new Date(), tomorrow = new Date(Date.now() + 864e5);
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  const start = at(c.start);
+  const date = same(start, day) ? "Today" : same(start, tomorrow) ? "Tomorrow"
+    : start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const time = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${date}, ${time(start)} – ${time(at(c.end))}`;
+}
+
+// The tab row scrolls sideways when the window is too narrow for it: fade its
+// right edge while more tabs are hidden there.
+function fadeTabs() {
+  const f = $("lib-status").parentElement;
+  f.classList.toggle("more", f.scrollLeft + f.clientWidth < f.scrollWidth - 1);
+}
+$("lib-status").parentElement.addEventListener("scroll", fadeTabs, { passive: true });
+window.addEventListener("resize", fadeTabs);
+
+// Paper id -> the next class that covers it (set by renderLibrary).
+let nextOf = new Map();
+
+function classTag(c) {
+  const day = new Date(`${c.date}T${c.start}`).toLocaleDateString(undefined, { weekday: "short" });
+  return `Next class · ${c.label}, ${day}`;
 }
 
 // "NeurIPS 2017", not "NeurIPS 2017 2017" when the venue already has the year.
@@ -2976,6 +3290,8 @@ function libRow(p) {
   if (p.processing) main.append(el("div", "lib-meta", "Processing…"));
   if (p.tldr) main.append(el("p", "lib-tldr", p.tldr));
   const tags = el("div", "lib-tags");
+  const cls = nextOf.get(p.id);
+  if (cls && libView.status !== "next") tags.append(el("span", "plan-tag", classTag(cls)));
   if (!p.processing) {
     const c = el("button", p.course ? "course-tag" : "course-tag course-none", p.course || "+ course");
     c.type = "button";

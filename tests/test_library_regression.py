@@ -95,6 +95,9 @@ def test_every_paper_is_sound(pid):
             assert (library.paper_dir(pid) / b["image"]).exists(), f"missing crop {b['image']}"
     # Highlights and summary/cards point at real sentences.
     assert set(p.get("ai_labels", {})) <= set(S)
-    for key in ("results", "contributions", "limitations"):
+    for key in ("novelty", "method", "results", "contributions", "limitations"):
         for it in (p.get("summary") or {}).get(key, []):
             assert set(it["highlights"]) <= set(S)
+    refs = {b["id"] for b in p["blocks"] if b["type"] == "references"}
+    for it in (p.get("summary") or {}).get("related_work", []):
+        assert set(it["refs"]) <= refs
