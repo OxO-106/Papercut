@@ -3,6 +3,7 @@
 import hashlib
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Callable
 
@@ -505,6 +506,7 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
                 and len(b["text"]) < 300 and "\n" not in b["text"].strip():
             b["type"] = "caption"
     raw = _join_caption_lines(raw)
+    raw, n_float = _recover_glued_figures(raw, pdf, paper_id, n_float)
     raw, n_float = _tables_from_rules(raw, pdf, paper_id, n_float)
 
     # Tables Docling didn't recognise arrive as number-heavy text: show them as
@@ -527,6 +529,7 @@ def parse_paper(paper_id: str, progress: Progress = lambda s, f: None) -> dict:
         if candidates(b) and near_table and _looks_tabular(b["text"], loose=True):
             to_table(b)
 
+    raw = _move_captions_up(raw)
     raw, n_float = _attach_captions(raw, pdf, paper_id, n_float)
     raw = _drop_nested_floats(raw, paper_id)
     raw, n_float = _merge_split_figures(raw, pdf, paper_id, n_float)
@@ -1173,6 +1176,191 @@ def _merge_split_figures(raw: list[dict], pdf: fitz.Document, paper_id: str, n_f
         f.update(**crop, _pos=(p, x0, y0, x1, y1))
         absorbed.update(parts)
     return [b for i, b in enumerate(raw) if i not in absorbed], n_float
+
+
+_LABEL_IN_TEXT = re.compile(r"(?:^|(?<=\s))(Figure|Fig\.)\s*(\d+)\b")
+_LABEL_START = re.compile(r"^\s*(Figure|Fig\.?|Table|Tab\.?)\s*(\d+)", re.I)
+
+
+def _alnum(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _float_key(text: str) -> str | None:
+    m = _LABEL_START.match(text)
+    return m and ("table" if m[1].lower().startswith("tab") else "figure") + m[2]
+
+
+def _drawn_above(page: fitz.Page, cap: fitz.Rect) -> fitz.Rect | None:
+    """The figure drawn just above a caption: the paths and images in the
+    caption's column, gathered upward while each next one is close (within
+    24pt), then the small print around them (axis labels, titles: text
+    smaller than the page's body text). Running text above bounds it."""
+    sizes: Counter = Counter()
+    lines = []
+    for blk in page.get_text("dict")["blocks"]:
+        for line in blk.get("lines", []):
+            spans = [sp for sp in line["spans"] if sp["text"].strip()]
+            if spans:
+                size = max(sp["size"] for sp in spans)
+                sizes[round(size, 1)] += sum(len(sp["text"]) for sp in spans)
+                lines.append((fitz.Rect(line["bbox"]), size))
+    if not sizes:
+        return None
+    body = sizes.most_common(1)[0][0]
+    in_col = lambda r: r.x0 >= cap.x0 - 12 and r.x1 <= cap.x1 + 12
+    floor = max((r.y1 for r, size in lines if size >= 0.9 * body and r.y1 <= cap.y0 - 1
+                 and in_col(r) and r.width > 0.5 * cap.width), default=page.rect.y0)
+    pieces = []
+    for r in [d["rect"] for d in page.get_drawings()] + [fitz.Rect(im["bbox"]) for im in page.get_image_info()]:
+        r = fitz.Rect(r.x0, r.y0, max(r.x1, r.x0 + 0.1), max(r.y1, r.y0 + 0.1))  # rules have no height
+        if r.y1 <= cap.y0 + 2 and r.y0 >= floor - 1 and in_col(r):
+            pieces.append(r)
+    region, top = None, cap.y0
+    for r in sorted(pieces, key=lambda r: -r.y1):
+        if r.y1 < top - 24:
+            break
+        region = r if region is None else region | r
+        top = min(top, r.y0)
+    if region is None or region.height < 20:
+        return None
+    for _ in range(3):  # labels can sit beside labels
+        for r, size in lines:
+            if size < 0.9 * body and in_col(r) and r.y0 >= floor - 1 and r.y1 <= cap.y0 + 1 \
+                    and region.y0 - 14 <= r.y1 and r.y0 <= region.y1 + 14:
+                region |= r
+    return region
+
+
+def _cut_alnum(text: str, start: int, n: int) -> int:
+    """The index in `text` just after its first `n` letters and digits from `start`."""
+    end = start
+    while end < len(text) and n > 0:
+        n -= bool(re.match(r"[a-z0-9]", text[end].lower()))
+        end += 1
+    return end
+
+
+def _recover_glued_figures(raw: list[dict], pdf: fitz.Document, paper_id: str, n_float: int) -> tuple[list[dict], int]:
+    """Docling sometimes reads a drawn (vector) figure's labels as text and
+    glues its caption on after them ("Test Loss 10 8 6 4 … Tokens Processed
+    Figure 2 We show a series of …", Scaling Laws' Figure 2), so the figure
+    is lost: its pieces turn up as stray text and specks of image. Where a
+    paragraph holds a figure caption the PDF prints as a block of its own,
+    and no float has that caption, crop the figure drawn above the caption
+    and put it, captioned, in the paragraph's place; text and uncaptioned
+    images within the figure are dropped."""
+    captioned = set()
+    for b in raw:
+        texts = [c["text"] for c in b.get("_captions", [])] + ([b["text"]] if b["type"] == "caption" else [])
+        captioned.update(k for k in map(_float_key, texts) if k)
+    replace: dict[int, list[dict]] = {}
+    regions = []  # (page, rect) of each recovered figure
+    for i, b in enumerate(raw):
+        if b["type"] not in ("paragraph", "list_item") or b["region"] == "front" or not b.get("provs"):
+            continue
+        for m in _LABEL_IN_TEXT.finditer(b["text"]):
+            key = f"figure{m[2]}"
+            if key in captioned:
+                continue
+            after = _alnum(b["text"][m.start():])
+            hit = None
+            for p in sorted({p for p, _ in b["provs"]}):
+                for x0, y0, x1, y1, text, *_ in pdf[p - 1].get_text("blocks"):
+                    if _float_key(text) == key and len(_alnum(text)) >= 20 and after.startswith(_alnum(text)[:40]):
+                        hit = (p, fitz.Rect(x0, y0, x1, y1), _alnum(text))
+            if not hit:
+                continue
+            p, cap_rect, cap_alnum = hit
+            region = _drawn_above(pdf[p - 1], cap_rect)
+            if region is None:
+                continue
+            n_float += 1
+            crop = _crop(pdf, paper_id, f"figure-{n_float}", (p, tuple(region)))
+            if crop is None:
+                continue
+            # The caption runs as far as the PDF's caption block does: into
+            # the rest of this paragraph, or on into the next ones (Docling
+            # may have cut it at a line break).
+            end = _cut_alnum(b["text"], m.start(), len(cap_alnum))
+            caption = b["text"][m.start():end].strip()
+            j = i + 1
+            while len(_alnum(caption)) < len(cap_alnum) and j < len(raw) and raw[j].get("text") \
+                    and cap_alnum[len(_alnum(caption)):].startswith(_alnum(raw[j]["text"])[:20]):
+                caption += " " + raw[j]["text"].strip()
+                replace[j] = []
+                j += 1
+            fig = {"type": "figure", **crop, "region": b["region"], "_pos": (p, *region),
+                   "_captions": [{"text": caption, "provs": [(p, tuple(cap_rect))]}]}
+            whole = region | cap_rect
+            before, rest = b["text"][:m.start()].strip(), b["text"][end:].strip()
+            labels_only = all(pg == p and _mostly_inside(bb, whole) for pg, bb in b["provs"])
+            parts = []
+            if before and not labels_only:
+                parts.append(dict(b, text=before))
+            parts.append(fig)
+            if rest:
+                parts.append(dict(b, text=rest))
+            replace[i] = parts
+            regions.append((p, region))
+            captioned.add(key)
+            break
+    if not replace:
+        return raw, n_float
+
+    in_fig = lambda pg, bb: any(pg == p and _mostly_inside(bb, r) for p, r in regions)
+    out = []
+    for i, b in enumerate(raw):
+        if i in replace:
+            out.extend(replace[i])
+            continue
+        if b["type"] in ("figure", "table") and not b.get("_captions") and b.get("_pos") and in_fig(b["_pos"][0], b["_pos"][1:]):
+            (library.assets_dir(paper_id) / b["image"].split("/")[-1]).unlink(missing_ok=True)
+            continue
+        if b["type"] in ("paragraph", "list_item") and b.get("provs") and in_fig(*b["provs"][0]):
+            # A label, or labels glued onto the text after the figure: drop the label lines.
+            lead = 0
+            while lead < len(b["provs"]) and in_fig(*b["provs"][lead]):
+                lead += 1
+            if lead == len(b["provs"]):
+                continue
+            words = [w[4] for pg, bb in b["provs"][:lead] for w in pdf[pg - 1].get_text("words", clip=fitz.Rect(bb))]
+            b = dict(b, text=b["text"][_cut_alnum(b["text"], 0, len(_alnum("".join(words)))):].strip(), provs=b["provs"][lead:])
+            b["_pos"] = (b["provs"][0][0], *b["provs"][0][1])
+        out.append(b)
+    return out, n_float
+
+
+def _move_captions_up(raw: list[dict]) -> list[dict]:
+    """Docling may give a caption to the figure below it rather than the one
+    above (Scaling Laws, page 8: Figure 5's caption sits between Figures 5
+    and 6, and went to 6, leaving 6's own caption loose). In a paper whose
+    figure captions sit below their figures, a caption that lies above its
+    figure and right under an uncaptioned figure moves to that one; the
+    loose caption is then paired by _attach_captions."""
+    figs = [b for b in raw if b["type"] == "figure" and b.get("_pos")]
+
+    def cap_box(f):
+        boxes = [fitz.Rect(bb) for c in f.get("_captions", []) for pg, bb in c.get("provs", []) if pg == f["_pos"][0]]
+        return _union(boxes) if boxes else None
+
+    below = above = 0
+    for f in figs:
+        cb = cap_box(f)
+        if cb:
+            below += cb.y0 >= f["_pos"][4] - 5
+            above += cb.y1 <= f["_pos"][2] + 5
+    if below <= above:
+        return raw
+    for f in figs:
+        cb = cap_box(f)
+        if not cb or cb.y1 > f["_pos"][2] + 5:
+            continue
+        over = [g for g in figs if g is not f and not g.get("_captions") and g["_pos"][0] == f["_pos"][0]
+                and -5 <= cb.y0 - g["_pos"][4] <= 30 and min(cb.x1, g["_pos"][3]) - max(cb.x0, g["_pos"][1]) > 0]
+        if len(over) == 1:
+            over[0]["_captions"], f["_captions"] = f["_captions"], []
+    return raw
 
 
 def _drop_text_inside_floats(raw: list[dict]) -> list[dict]:

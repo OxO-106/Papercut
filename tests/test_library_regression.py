@@ -79,6 +79,20 @@ def test_opensage_listings_are_images():
     assert len([f for f in floats(p) if f[1].startswith("Listing")]) >= 4
 
 
+def test_scaling_laws_drawn_figure_2_and_captions_5_6():
+    # Figure 2 is drawn (vector) with no colon after its label: Docling read
+    # its labels as text with the caption glued on, and the figure was lost.
+    # Figure 5's caption, between Figures 5 and 6, went to Figure 6.
+    p = paper("Scaling Laws for Neural Language Models")
+    assert len(captioned(p, "Figure 2")) == 1
+    assert not any("10 8 6 4" in " ".join(p["sentences"][s]["text"] for s in b.get("sentences", [])) for b in p["blocks"])
+    S, by = p["sentences"], {b["id"]: b for b in p["blocks"]}
+    caps = [" ".join(S[s]["text"] for s in b.get("caption_sentences") or by.get(b.get("caption_block"), {}).get("sentences", []))
+            for b in p["blocks"] if b["type"] == "figure"]
+    labels = [c.split()[1] for c in caps if c.startswith("Figure")]
+    assert labels[:7] == ["1", "2", "3", "4", "5", "6", "7"]
+
+
 @pytest.mark.parametrize("pid", catalog.paper_ids() or ["none"])
 def test_every_paper_is_sound(pid):
     if pid == "none":

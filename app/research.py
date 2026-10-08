@@ -17,6 +17,7 @@ page turns into a link.
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -161,6 +162,60 @@ def citing_works(paper: dict, per_sort: int = 5) -> list[dict]:
                 seen.add(w["id"])
                 works.append(_openalex_work(w))
     return works
+
+
+# ---- Semantic Scholar: far fuller citation data than OpenAlex for arXiv-era
+# ML papers (GQA's OpenAlex citers were surveys and hardware papers; Kimi
+# Linear had 1 citer there and 187 here). Anonymous use is rate-limited: retry.
+
+_S2 = "https://api.semanticscholar.org/graph/v1/paper"
+
+
+def _s2_get(url: str, **params) -> httpx.Response:
+    for wait in (2, 5, 10, 20, 30, 0):
+        r = httpx.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
+        if r.status_code != 429 or not wait:
+            r.raise_for_status()
+            return r
+        time.sleep(wait)
+
+
+def s2_citing_works(paper: dict, top: int = 7, newest: int = 3) -> list[dict]:
+    """Later work citing the paper (Semantic Scholar): the most-cited, plus the
+    newest. [] if the paper isn't found; raises httpx.HTTPError if unreachable."""
+    src = library.source_info(paper["id"])
+    if src.get("arxiv"):
+        pid = f"arXiv:{src['arxiv']}"
+    elif src.get("doi"):
+        pid = f"DOI:{src['doi']}"
+    else:
+        try:
+            hit = _s2_get(f"{_S2}/search/match", query=paper["meta"]["title"], fields="title").json()["data"][0]
+        except (httpx.HTTPStatusError, KeyError, IndexError):
+            return []
+        if _norm(hit.get("title", "")) != _norm(paper["meta"]["title"]):
+            return []
+        pid = hit["paperId"]
+    try:
+        data = _s2_get(f"{_S2}/{pid}/citations", fields="title,year,citationCount,authors,abstract,externalIds,url",
+                       limit=1000).json().get("data", [])
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return []
+        raise
+    works = [c["citingPaper"] for c in data if (c.get("citingPaper") or {}).get("title")]
+    picked = sorted(works, key=lambda w: -(w.get("citationCount") or 0))[:top]
+    picked += [w for w in sorted(works, key=lambda w: -(w.get("year") or 0)) if w not in picked][:newest]
+    out = []
+    for w in picked:
+        ids = w.get("externalIds") or {}
+        names = [a.get("name", "") for a in w.get("authors") or []]
+        url = (f"https://arxiv.org/abs/{ids['ArXiv']}" if ids.get("ArXiv") else
+               f"https://doi.org/{ids['DOI']}" if ids.get("DOI") else w.get("url") or "")
+        out.append({"title": w["title"], "year": str(w.get("year") or ""),
+                    "authors": ", ".join(names[:4]) + (" et al." if len(names) > 4 else ""),
+                    "abstract": w.get("abstract") or "", "cited_by": w.get("citationCount"), "url": url})
+    return out
 
 
 def search_works(query: str, n: int = 6) -> list[dict]:

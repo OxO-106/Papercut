@@ -98,6 +98,9 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
         refs = [b for b in paper["blocks"] if b["type"] == "references"]
         ref_n = {b["id"]: n for n, b in enumerate(refs, 1)}
         out += ["## Summary", "", f"**In brief.** {s['tldr']}", ""]
+        vis = s.get("visuals") or {}
+        if vis.get("key_numbers"):
+            out += [" · ".join(f"**{k['value']}** {k['label']}" for k in vis["key_numbers"]), ""]
         para = lambda head, text: [f"### {head}", "", text, ""] if text else []
         bullets = lambda head, items: ([f"### {head}", ""] + items + [""]) if items else []
         listed = lambda key: [f"- {it['text']}{jumps(it.get('highlights'))}" for it in s.get(key, [])]
@@ -107,7 +110,16 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
         out += para("Objective", s.get("objective")) + para("Problem", s.get("problem"))
         out += bullets("What's new", listed("novelty")) + para("Approach", s.get("approach"))
         out += bullets("Method", [f"{i}. {it['text']}{jumps(it.get('highlights'))}" for i, it in enumerate(s.get("method", []), 1)])
-        out += bullets("Key results", listed("results")) + bullets("Contributions", listed("contributions"))
+        out += [line for f in vis.get("figures", []) for line in (f"**{f['label']}.** {f['why']}", "")]
+        table = []
+        if vis.get("table"):
+            t = vis["table"]
+            cell = lambda c: str(c).replace("|", r"\|")
+            table = ([f"*{t['title']}*", ""] if t.get("title") else []) + [
+                "| " + " | ".join(map(cell, t["columns"])) + " |", "|" + "---|" * len(t["columns"])] + [
+                "| " + " | ".join(map(cell, r)) + " |" for r in t["rows"]] + [""] + ([t["note"], ""] if t.get("note") else [])
+        out += (["### Key results", ""] + table + listed("results") + [""]) if table or s.get("results") else []
+        out += bullets("Contributions", listed("contributions"))
         out += bullets("Limitations", listed("limitations"))
         out += bullets("Related work", [
             f"- {it['text']}" + (f" [{', '.join(str(ref_n[r]) for r in it['refs'] if r in ref_n)}]" if it.get("refs") else "")
@@ -119,7 +131,7 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
             if s.get("open_questions"):
                 out += ["**Open questions**", ""]
                 for q in s["open_questions"]:
-                    out += [f"- {q}"] if isinstance(q, str) else [f"- **{q['q']}**", f"  *Proposed answer:* {q['answer']}"]
+                    out += [f"- {q}"] if isinstance(q, str) else [f"- **{q['q']}**{jumps(q.get('at'))}", f"  *Proposed answer:* {q['answer']}"]
                 out += [""]
         out += bullets("Later work", [
             f"- [{w['title']}]({w['url']})" + (f" ({w['year']})" if w.get("year") else "") + f": {w['note']}"
@@ -197,7 +209,8 @@ def render(paper: dict, parts=PARTS, hidden: set[str] = frozenset()) -> str:
             out += [f"### {i}. {q['q']}", "", f"*{STATUS.get(q.get('status'), q.get('status', ''))}*", ""]
             for sid in q.get("highlights", []):
                 if sid in S:
-                    out += [_quote(S[sid]["text"]), ""]
+                    page = _page(paper, sid)
+                    out += [_quote(S[sid]["text"] + (f" (p. {page})" if page else "")), ""]
             out += [_answer(paper, q.get("answer", ""), q.get("sources", []), q.get("web", [])), ""]
             if q.get("web"):
                 out += ["Sources:", ""] + _web_list(q["web"]) + [""]

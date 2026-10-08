@@ -12,6 +12,8 @@ Written in two passes, both by the local model:
                related work, future research, open questions with proposed
                answers, a note on how each library paper relates, and which
                later papers matter and why.
+  3. Visuals - headline numbers, the paper's key figures, a results table
+               and a chart; every number is checked against the paper's text.
 Bullets point back at the highlights (and related work at the reference
 entries) they rest on, so the page can jump to them.
 
@@ -184,15 +186,17 @@ def _which(item: dict, titles: list[str]) -> int | None:
 
 
 def _later_work(paper: dict, title: str, year: str, progress) -> tuple[list[dict], str]:
-    """Later papers to place this one against: those citing it (OpenAlex),
-    else recent arXiv papers on the same subject. Returns (works, how found)."""
+    """Later papers to place this one against: those citing it (Semantic
+    Scholar, else OpenAlex), else recent arXiv papers on the same subject.
+    Returns (works, how found)."""
     progress("Finding later work that cites it", 0.45)
-    try:
-        works = research.citing_works(paper)
-        if works:
-            return works, "cites"
-    except httpx.HTTPError:
-        pass
+    for source in (research.s2_citing_works, research.citing_works):
+        try:
+            works = source(paper)
+            if works:
+                return works, "cites"
+        except httpx.HTTPError:
+            pass
     try:
         found = research.search_works(title, 8)
     except httpx.HTTPError:
@@ -253,8 +257,25 @@ def generate(paper: dict, progress=lambda s, f: None) -> dict:
         "venue": str(core.get("venue", "")).strip()[:120],
         "topics": topics[:6],
     }
+    return _context(paper, out, progress)
 
-    # ---- 2. context: related work, what's next, connections
+
+CONTEXT_KEYS = ("related_work", "future_research", "open_questions", "library_notes", "later_work", "later_how")
+
+
+def refresh_context(paper: dict, progress=lambda s, f: None) -> dict:
+    """Rewrite only the second pass (related work, what's next, connections)
+    of a version-2 summary, keeping the first part as it is."""
+    old = paper.get("summary") or {}
+    if old.get("version") != VERSION:
+        raise ValueError("This paper's summary is from before version 2: write it again instead.")
+    return _context(paper, {k: v for k, v in old.items() if k not in CONTEXT_KEYS}, progress)
+
+
+def _context(paper: dict, out: dict, progress) -> dict:
+    """Pass 2, on top of the first part (`out`): related work, what's next,
+    connections in the library and later work."""
+    title, year = paper["meta"]["title"], out.get("year", "")
     refs = _references(paper)
     conn = catalog.connections(paper["id"])
     linked = {}
@@ -298,6 +319,7 @@ def generate(paper: dict, progress=lambda s, f: None) -> dict:
     out["future_research"] = [str(x).strip() for x in ctx.get("future_research") or [] if str(x).strip()][:6]
     out["open_questions"] = [{"q": str(x.get("question", "")).strip(), "answer": str(x.get("answer", "")).strip()}
                              for x in ctx.get("open_questions") or [] if str(x.get("question", "")).strip()][:5]
+    locate_open_questions(paper, out)
     out["library_notes"] = {}
     for x in ctx.get("library") or []:
         i = _which(x, [t for _, t in lib])
@@ -314,4 +336,147 @@ def generate(paper: dict, progress=lambda s, f: None) -> dict:
     out["later_how"] = found_how
     out["at"] = time.time()
     out["model"] = llm.model_name()
+    return _visuals(paper, out, progress)
+
+
+def locate_open_questions(paper: dict, summary: dict) -> dict:
+    """Point each open question at the sentence of the paper that raises it
+    ("at", a sentence id), so the summary can link back to that place."""
+    hl = key_highlights(paper)
+    for q in summary.get("open_questions") or []:
+        if isinstance(q, dict) and q.get("q"):
+            sid = ask.raised_at(paper, q["q"], hl, q.get("answer", "")[:600])
+            q["at"] = [sid] if sid else []
+    return summary
+
+
+def refresh_visuals(paper: dict, progress=lambda s, f: None) -> dict:
+    """Add (or redo) only the third pass, the visuals, of a version-2 summary."""
+    old = paper.get("summary") or {}
+    if old.get("version") != VERSION:
+        raise ValueError("This paper's summary is from before version 2: write it again instead.")
+    return _visuals(paper, {k: v for k, v in old.items() if k != "visuals"}, progress)
+
+
+VISUALS_SYSTEM = """You are adding visuals to a summary of the paper "{title}" for a reader who has not read it. The summary so far:
+---
+{core}
+---
+From the paper's text and its list of figures and tables (given below), pick and build what helps a reader see the results at a glance. Use ONLY numbers that are written in the text below, copied exactly as written (same digits and decimals); never compute, round, estimate or invent a number. Leave a field empty rather than guess.
+Fields:
+- key_numbers: the 3-4 headline numbers of the paper (a score, a speed-up, a size, an exponent), each with "value" (short, as written, with its unit, e.g. "12.5%", "0.076", "175B") and "label" (a few words saying what it measures, e.g. "SWE-bench Lite resolved, GPT-4").
+- figures: the 1-2 figures or tables from the list that best show the main idea or result, each with "label" copied exactly from the list (e.g. "Figure 3", "Table 2") and "why": two sentences on what that one shows and how to read it (axes, what to compare).
+- table: the paper's main quantitative comparison as a small table a reader would want side by side (methods vs baselines, settings, datasets): "title", "columns" (2-6 headers; the first names the rows), "rows" (2-8 rows, each one cell per column, numbers as written), "note" (one sentence: what the numbers are and which way is better). Empty columns and rows if the text doesn't give such numbers.
+- chart: one chart of numbers that compare: "kind" "bar" (values across methods or settings) or "line" (a value as something grows, e.g. model size); "title"; "x_label"; "y_label"; "series": one per line or group, each "name" and "points" [{{"x": label, "y": number}}] with at least 3 points in total; "ours": the x label (bar) or series name (line) that is this paper's own method, or "". Empty series if the text has no such numbers.
+Reply with JSON only."""
+
+VISUALS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key_numbers": {"type": "array", "items": {"type": "object", "properties": {
+            "value": {"type": "string"}, "label": {"type": "string"}}, "required": ["value", "label"]}},
+        "figures": {"type": "array", "items": {"type": "object", "properties": {
+            "label": {"type": "string"}, "why": {"type": "string"}}, "required": ["label", "why"]}},
+        "table": {"type": "object", "properties": {
+            "title": {"type": "string"}, "columns": {"type": "array", "items": {"type": "string"}},
+            "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}, "note": {"type": "string"}},
+            "required": ["title", "columns", "rows", "note"]},
+        "chart": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["bar", "line"]}, "title": {"type": "string"},
+            "x_label": {"type": "string"}, "y_label": {"type": "string"}, "ours": {"type": "string"},
+            "series": {"type": "array", "items": {"type": "object", "properties": {
+                "name": {"type": "string"}, "points": {"type": "array", "items": {"type": "object", "properties": {
+                    "x": {"type": "string"}, "y": {"type": "number"}}, "required": ["x", "y"]}}}, "required": ["name", "points"]}}},
+            "required": ["kind", "title", "x_label", "y_label", "ours", "series"]},
+    },
+    "required": ["key_numbers", "figures", "table", "chart"],
+}
+
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _numbers(text: str) -> set[str]:
+    """The numbers written in a text, without thousands separators or trailing
+    decimal zeros ("1,024" -> "1024", "0.050" -> "0.05")."""
+    out = set()
+    for n in _NUMBER.findall(text):
+        n = n.replace(",", "")
+        out.add(n.rstrip("0").rstrip(".") if "." in n else n)
+    return out
+
+
+def _plain(y: float) -> str:
+    """A number as the paper would write it: 12.0 -> "12", 0.0760 -> "0.076"."""
+    return f"{y:.6f}".rstrip("0").rstrip(".") if isinstance(y, float) else str(y)
+
+
+def _float_list(paper: dict) -> list[tuple[str, str]]:
+    """(label, caption) of the main text's figures and tables, in order."""
+    S, by = paper["sentences"], {b["id"]: b for b in paper["blocks"]}
+    out = []
+    for b in paper["blocks"]:
+        if b["type"] not in ("figure", "table") or not b.get("image") or b.get("region") == "appendix":
+            continue
+        ids = b.get("caption_sentences") or by.get(b.get("caption_block"), {}).get("sentences", [])
+        cap = " ".join(S[s]["text"] for s in ids)
+        m = re.match(r"\s*(Figure|Fig\.?|Table)\s*(\d+)", cap, re.I)
+        if m:
+            out.append((("Table " if m[1].lower().startswith("t") else "Figure ") + m[2], cap))
+    return out
+
+
+def _visuals(paper: dict, out: dict, progress) -> dict:
+    """Pass 3: headline numbers, the key figures, a results table and a chart.
+    Every number must be written in the paper: anything the model can't point
+    to there is dropped, so a table or chart never shows an invented value."""
+    progress("Adding tables and charts", 0.96)
+    S = paper["sentences"]
+    floats = _float_list(paper)
+    known = _numbers(" ".join(s["text"] for s in S.values()))
+    ok = lambda text: _numbers(str(text)) <= known
+    core_text = "\n".join(x for x in [
+        f"In brief: {out.get('tldr', '')}", *("Result: " + x["text"] for x in out.get("results", []))] if x)
+    user = (f"The paper:\n{_main_text(paper, 40000)}\n\nIts figures and tables:\n"
+            + ("\n".join(f"{label}: {cap[:300]}" for label, cap in floats) or "(none)"))
+    system = VISUALS_SYSTEM.format(title=paper["meta"]["title"], core=core_text)
+    try:
+        v = _ask([{"role": "system", "content": system}, {"role": "user", "content": user}], VISUALS_SCHEMA)
+    except (json.JSONDecodeError, httpx.HTTPError):
+        return out  # the summary stands without visuals
+
+    vis = {}
+    vis["key_numbers"] = [{"value": str(k["value"]).strip()[:24], "label": str(k.get("label", "")).strip()[:80]}
+                          for k in v.get("key_numbers") or []
+                          if _numbers(str(k.get("value", ""))) and ok(k["value"]) and str(k.get("label", "")).strip()][:4]
+    figs, labels = [], {label.lower(): label for label, _ in floats}
+    for f in v.get("figures") or []:
+        said = re.sub(r"^fig\.?\s*(?:ure)?\s*", "figure ", str(f.get("label", "")).strip().lower())
+        label = labels.get(re.sub(r"^tab\.?\s*(?:le)?\s*", "table ", said))
+        if label and str(f.get("why", "")).strip() and label not in (x["label"] for x in figs):
+            figs.append({"label": label, "why": str(f["why"]).strip()})
+    vis["figures"] = figs[:2]
+
+    t = v.get("table") or {}
+    cols = [str(c).strip() for c in t.get("columns") or []][:6]
+    rows = [[str(c).strip() for c in r][:len(cols)] for r in t.get("rows") or [] if isinstance(r, list) and len(r) >= len(cols)]
+    # A column with a number the paper doesn't state goes; so does a row whose name does.
+    keep = [0] + [i for i in range(1, len(cols)) if all(ok(r[i]) for r in rows)]
+    cols = [cols[i] for i in keep]
+    rows = [[r[i] for i in keep] for r in rows if ok(r[0])]
+    if len(cols) >= 2 and len(rows) >= 2 and sum(bool(_numbers(c)) for r in rows for c in r[1:]) >= 2:
+        vis["table"] = {"title": str(t.get("title", "")).strip(), "columns": cols, "rows": rows[:8],
+                        "note": str(t.get("note", "")).strip()}
+
+    c = v.get("chart") or {}
+    series = []
+    for sr in c.get("series") or []:
+        pts = [{"x": str(p.get("x", "")).strip()[:40], "y": p["y"]} for p in sr.get("points") or []
+               if isinstance(p.get("y"), (int, float)) and str(p.get("x", "")).strip() and ok(_plain(p["y"]))]
+        if pts:
+            series.append({"name": str(sr.get("name", "")).strip()[:60], "points": pts[:12]})
+    series = series[:3]
+    if c.get("kind") in ("bar", "line") and sum(len(sr["points"]) for sr in series) >= 3 \
+            and (c["kind"] == "bar" or any(len(sr["points"]) >= 3 for sr in series)):
+        vis["chart"] = {k: str(c.get(k, "")).strip() for k in ("kind", "title", "x_label", "y_label", "ours")} | {"series": series}
+    out["visuals"] = vis
     return out

@@ -169,6 +169,38 @@ def retrieve(paper: dict, query: str, k: int = TOP_K) -> list[dict]:
     return [ps[i] for i in sorted(chosen)]  # reading order reads better than score order
 
 
+def raised_at(paper: dict, question: str, prefer: list[str] = (), context: str = "") -> str | None:
+    """The sentence of the paper a question comes from: the best passage by
+    keywords and meaning (as in retrieve, without the abstract), searched with
+    the question and its `context` (e.g. a proposed answer, which names what
+    the question is about), then that passage's sentence sharing the most of
+    those words, the question's counting double and a key highlight
+    (`prefer`) winning a near tie. None if nothing in the paper matches."""
+    S = paper["sentences"]
+    ps = [p for p in passages(paper) if not re.match(r"\s*abstract", p["heading"], re.I)] or passages(paper)
+    ps = [p for p in ps if any(len(S[sid]["text"].split()) >= 6 for sid in p["sentences"])]
+    if not ps:
+        return None
+    query = f"{question} {question} {context}".strip()
+    lexical = _bm25(ps, query)
+    rankings = [lexical]
+    semantic = _semantic(paper, ps, f"{question}\n{context}".strip())
+    if semantic is not None:
+        rankings.append(semantic)
+    scores = [0.0] * len(ps)
+    for ranking in rankings:
+        for rank, i in enumerate(sorted(range(len(ps)), key=lambda i: -ranking[i])):
+            scores[i] += 1 / (60 + rank)
+    best = max(range(len(ps)), key=lambda i: scores[i])
+    if not lexical[best] and semantic is None:
+        return None
+    q, c, prefer = set(_tokens(question)), set(_tokens(context)), set(prefer)
+    def overlap(sid):
+        words = set(_tokens(S[sid]["text"]))
+        return 2 * len(q & words) + len(c & words) + (1 if sid in prefer else 0)
+    return max((sid for sid in ps[best]["sentences"] if len(S[sid]["text"].split()) >= 6), key=overlap)
+
+
 def _labels_kept(l: dict) -> bool:
     return l.get("tier") is not None if "tier" in l else l["confidence"] >= 0.7
 

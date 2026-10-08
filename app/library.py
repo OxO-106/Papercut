@@ -159,6 +159,9 @@ def carry_over(old: dict, new: dict) -> None:
         for key in ("novelty", "method", "results", "contributions", "limitations"):
             for it in new["summary"].get(key, []):
                 it["highlights"] = move(it.get("highlights"))
+        for q in new["summary"].get("open_questions", []):
+            if isinstance(q, dict) and q.get("at"):
+                q["at"] = move(q["at"])
         # Related work points at reference entries: matched by their text.
         old_refs = {b["id"]: b.get("text") for b in old["blocks"] if b["type"] == "references"}
         new_refs = {b.get("text"): b["id"] for b in new["blocks"] if b["type"] == "references"}

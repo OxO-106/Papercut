@@ -3,7 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const views = ["home", "progress", "reader", "review", "qview", "sview"];
 // The questions or summary page: a window of its own, apart from the reader.
-const inSideWindow = () => !$("qview").hidden || !$("sview").hidden;
+const onFullPage = () => !$("qview").hidden || !$("sview").hidden; // the questions or summary page
 let current = null; // loaded paper.json
 let renderedId = null; // the paper laid out in #paper (kept while its summary page shows)
 let readerPos = null; // the sentence the reader was at when the summary page opened
@@ -137,8 +137,8 @@ history.scrollRestoration = "manual"; // the reader restores its own position (b
 window.addEventListener("hashchange", route);
 // #/                          library
 // #/paper/<id>                the reader; #/paper/<id>/s/<sid> opens it at a sentence
-// #/paper/<id>/questions      the questions on their own (a separate window)
-// #/paper/<id>/summary        the summary as a full page (a separate tab)
+// #/paper/<id>/questions      the questions as a full page
+// #/paper/<id>/summary        the summary as a full page
 // #/review, #/review/<id>     flashcard review, across the library or for one paper
 function route() {
   const h = location.hash;
@@ -287,9 +287,10 @@ async function openPaper(id, sid) {
     if (sid) jumpToSentence(sid);
     return;
   }
-  if (current?.id === id && renderedId === id) { // back from the summary page: the paper is still laid out
+  if (current?.id === id && renderedId === id) { // back from the summary or questions page: the paper is still laid out
     show("reader");
     document.title = current.meta.title;
+    askPending();
     if (sid) {
       history.replaceState(null, "", `#/paper/${id}`);
       requestAnimationFrame(() => jumpToSentence(sid));
@@ -319,6 +320,7 @@ async function openPaper(id, sid) {
   draft = null;
   show("reader");
   if (openPanelName) PANEL_OPEN[openPanelName]();
+  askPending();
   window.scrollTo(0, 0);
   buildOutline(paper);
   buildFloats(paper);
@@ -1340,19 +1342,24 @@ function headingNumber(text) {
   if (/^[A-H]$/.test(m[1]) && !/^[A-H]\.?\s+[A-Z]/.test(text)) return null; // "A system…" isn't numbered
   return m[1].split(".");
 }
+const ROMAN = /^(?=[IVX])X{0,3}(IX|IV|V?I{0,3})\.\s+\S/; // IEEE sections: "II. MOTIVATION AND BACKGROUND"
+const NOT_A_HEADING = /^(Algorithm|Figure|Fig\.|Table|Listing)\s*\d/i; // a float's title Docling read as a heading
 
 function outlineTree(paper) {
   const heads = paper.blocks.filter((b) =>
-    b.type === "heading" && b.region !== "front" && !/�/.test(b.text) && b.text.trim().length > 1);
+    b.type === "heading" && b.region !== "front" && !/�/.test(b.text) && b.text.trim().length > 1 && !NOT_A_HEADING.test(b.text));
+  // Roman-numbered sections (IEEE) hold lettered subsections: "II." then "A.", "B.".
+  const roman = heads.filter((b) => ROMAN.test(b.text)).length >= 2;
   // Numbering that restarts in each section ("INTRODUCTION", "1.", "2.", "METHODS", "1.")
   // means the numbered headings are subsections of unnumbered ones.
   const firsts = heads.map((b) => headingNumber(b.text)).filter((n) => n && n.length === 1).map((n) => n[0]);
-  const restarts = new Set(firsts).size < firsts.length;
+  const restarts = !roman && new Set(firsts).size < firsts.length;
   let lastDepth = 1;
   const flat = heads.map((b) => {
-    const num = headingNumber(b.text);
+    const num = roman && ROMAN.test(b.text) ? ["I"] : headingNumber(b.text);
     let depth;
-    if (num) depth = num.length + (restarts ? 1 : 0);
+    if (roman && num && b.region !== "appendix") depth = ROMAN.test(b.text) ? 1 : /^[A-H]$/.test(num[0]) ? num.length + 1 : num.length + 2;
+    else if (num) depth = num.length + (restarts ? 1 : 0);
     else if (TOP_LEVEL.test(b.text.trim()) || b.region === "references") depth = 1;
     else depth = Math.min(lastDepth + 1, 4); // a run-in or unnumbered sub-heading
     if (num) lastDepth = depth;
@@ -1546,6 +1553,9 @@ function buildFloats(paper) {
     sec.append(head, list);
     box.append(sec);
   };
+  // By number, not by where they sit in the text: a figure can come before a lower-numbered one on its page.
+  const byNumber = (a, b) => a.label.localeCompare(b.label, undefined, { numeric: true });
+  for (const k of ["figure", "table", "listing"]) groups[k].sort(byNumber);
   group("Figures", groups.figure, false);
   group("Tables", groups.table, false);
   group("Listings", groups.listing, false);
@@ -1906,12 +1916,8 @@ function setChatOpen(open) {
 $("chat-close").addEventListener("click", () => setChatOpen(false));
 
 function jumpToSentence(sid) {
-  if (!$("sview").hidden && current) { // the summary page: back to the paper, at this sentence
+  if (onFullPage() && current) { // the summary or questions page: back to the paper, at this sentence
     location.hash = `#/paper/${current.id}${sid ? `/s/${sid}` : ""}`;
-    return;
-  }
-  if (inSideWindow() && current) { // the questions window: jump in the reader window
-    toReader({ type: "jump", paper: current.id, sid }, `#/paper/${current.id}${sid ? `/s/${sid}` : ""}`);
     return;
   }
   const span = sid && $("paper").querySelector(`.s[data-sid="${sid}"]`);
@@ -2234,6 +2240,32 @@ function renderQuestions(box, ins, st, standalone = false) {
   for (const q of [...questions].sort((a, b) => first(a) - first(b))) box.append(questionCard(q));
 }
 
+// Where a sentence is in the paper: its section heading and page ("§ 4.2 Results · p. 6").
+function placeOf(sid) {
+  if (current._sectionOf?.paper !== current) {
+    const map = new Map();
+    let heading = "";
+    for (const b of current.blocks) {
+      if (b.type === "heading") heading = b.text;
+      for (const s of [...(b.sentences || []), ...(b.caption_sentences || [])]) map.set(s, heading);
+    }
+    current._sectionOf = { paper: current, map };
+  }
+  let sec = current._sectionOf.map.get(sid) || "";
+  if (sec.length > 48) sec = sec.slice(0, 47) + "…";
+  return [sec && `§ ${sec}`, pageOf(sid) && `p. ${pageOf(sid)}`].filter(Boolean).join(" · ");
+}
+
+// A link back to the place in the paper a question comes from.
+function raisedAt(sid, label = "Raised in") {
+  const b = el("button", "q-where");
+  b.type = "button";
+  b.append(el("span", "q-where-label", `${label} `), placeOf(sid) || "the paper");
+  b.title = current.sentences[sid].text;
+  b.addEventListener("click", () => jumpToSentence(sid));
+  return b;
+}
+
 function questionCard(q) {
   const card = el("article", "q-card");
   const meta = el("div", "q-meta");
@@ -2245,7 +2277,8 @@ function questionCard(q) {
   for (const sid of q.highlights || []) {
     const s = current.sentences[sid];
     if (!s) continue;
-    const about = el("button", "q-about", s.text.length > 150 ? s.text.slice(0, 150) + "…" : s.text);
+    const about = el("button", "q-about");
+    about.append(el("span", "q-about-where", placeOf(sid)), s.text.length > 150 ? s.text.slice(0, 150) + "…" : s.text);
     about.type = "button";
     about.title = "Go to this highlight";
     about.addEventListener("click", () => jumpToSentence(sid));
@@ -2265,57 +2298,44 @@ function questionCard(q) {
 }
 
 function followUp(text) {
-  if (inSideWindow()) { // the questions window: ask in the reader window
-    toReader({ type: "ask", paper: current.id, text }, `#/paper/${current.id}`);
+  if (onFullPage()) { // the questions page: back to the paper, with the question in Ask
+    pendingAsk = text;
+    location.hash = `#/paper/${current.id}`;
     return;
   }
   setChatOpen(true);
   $("chat-input").value = text + " ";
   $("chat-input").focus();
 }
-
-$("qpanel-window").addEventListener("click", () => {
-  if (!current) return;
-  window.open(`${location.pathname}#/paper/${current.id}/questions`, `questions-${current.id}`, "popup,width=760,height=900");
-});
-$("qpanel-md").addEventListener("click", () => current && downloadMarkdown(current.id, ["questions"]));
-
-// ---- The questions window. It talks to the reader window over a
-// BroadcastChannel: "jump to this sentence", "ask this in Ask". If no reader
-// window has this paper open, it becomes the reader itself.
-const channel = "BroadcastChannel" in window ? new BroadcastChannel("papercut") : null;
-
-function toReader(msg, fallbackHash) {
-  if (!channel) { location.hash = fallbackHash; return; }
-  let answered = false;
-  const onAck = (e) => { if (e.data?.type === "ack" && e.data.paper === msg.paper) answered = true; };
-  channel.addEventListener("message", onAck);
-  channel.postMessage(msg);
-  setTimeout(() => {
-    channel.removeEventListener("message", onAck);
-    if (!answered) location.hash = fallbackHash;
-  }, 400);
+let pendingAsk = null; // a follow-up from the questions page, put in Ask once the paper shows
+function askPending() {
+  if (pendingAsk == null) return;
+  setChatOpen(true);
+  $("chat-input").value = pendingAsk + " ";
+  $("chat-input").focus();
+  pendingAsk = null;
 }
 
-channel?.addEventListener("message", (e) => {
-  const m = e.data || {};
-  if (!current || $("reader").hidden || m.paper !== current.id) return;
-  if (m.type === "jump") jumpToSentence(m.sid);
-  else if (m.type === "ask") { setChatOpen(true); $("chat-input").value = m.text + " "; $("chat-input").focus(); }
-  else return;
-  channel.postMessage({ type: "ack", paper: m.paper });
-  window.focus();
+// The questions as a full page in the reader's window, set in the paper's
+// font, as the summary page is.
+$("qpanel-window").addEventListener("click", () => {
+  if (!current) return;
+  readerPos = $("reader").hidden ? null : readingPosition();
+  location.hash = `#/paper/${current.id}/questions`;
 });
+$("qpanel-md").addEventListener("click", () => current && downloadMarkdown(current.id, ["questions"]));
 
 let qviewTimer = null;
 async function showQuestionsView(id) {
   show("qview");
   clearTimeout(qviewTimer);
   if (current?.id !== id) {
+    renderedId = null;
     try { current = await loadPaperData(id); } catch (e) {
       $("qv-list").replaceChildren(el("p", "error", String(e.message || e)));
       return;
     }
+    current.links = {};
   }
   document.title = `Questions · ${current.meta.title}`;
   $("qv-title").textContent = current.meta.title;
@@ -2324,7 +2344,7 @@ async function showQuestionsView(id) {
   renderQuestions($("qv-list"), data.insights, data.status, true);
   if (["queued", "running"].includes(data.status?.state)) qviewTimer = setTimeout(() => showQuestionsView(id), 3000);
 }
-$("qv-open").addEventListener("click", () => current && toReader({ type: "jump", paper: current.id, sid: null }, `#/paper/${current.id}`));
+$("qv-back").addEventListener("click", () => current && (location.hash = `#/paper/${current.id}`));
 $("qv-md").addEventListener("click", () => current && downloadMarkdown(current.id, ["questions"]));
 $("qv-print").addEventListener("click", () => window.print());
 
@@ -2604,6 +2624,176 @@ function refChips(blocks) {
   return frag;
 }
 
+// ---- The summary's visuals (written by its third pass; every number is one
+// the paper states): headline numbers, the paper's key figures, a results
+// table and a chart.
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs = {}, text) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (text != null) n.textContent = text;
+  return n;
+}
+const fmtNum = (y) => (Math.abs(y) >= 1000 ? y.toLocaleString() : String(+y.toPrecision(4)));
+
+function niceTicks(lo, hi, n = 4) {
+  const span = hi - lo || Math.abs(hi) || 1;
+  const raw = span / n, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const ticks = [];
+  for (let t = Math.floor(lo / step) * step; t <= hi + step * 1e-9; t += step) ticks.push(+t.toPrecision(10));
+  if (ticks[ticks.length - 1] < hi) ticks.push(+(ticks[ticks.length - 1] + step).toPrecision(10));
+  return ticks;
+}
+
+function keyNumbers(nums) {
+  const row = el("div", "s-stats");
+  for (const k of nums) {
+    const tile = el("div", "s-stat");
+    tile.append(el("span", "s-stat-value", k.value), el("span", "s-stat-label", k.label));
+    row.append(tile);
+  }
+  return row;
+}
+
+// The paper's own figure, found by its label ("Figure 2"), with why it matters.
+function keyFigure(f) {
+  const byId = Object.fromEntries(current.blocks.map((b) => [b.id, b]));
+  const labelOf = (x) => {
+    const m = floatCaption(current, x, byId).match(FLOAT_LABEL);
+    return m && `${/^t/i.test(m[1]) ? "Table" : "Figure"} ${m[2]}`;
+  };
+  const b = current.blocks.find((x) => (x.type === "figure" || x.type === "table") && x.image && x.region !== "appendix" && labelOf(x) === f.label);
+  if (!b) return null;
+  const fig = el("figure", "s-fig");
+  const img = el("img");
+  img.src = `/api/papers/${current.id}/${b.image}`;
+  img.alt = f.label;
+  img.loading = "lazy";
+  const cap = el("figcaption");
+  cap.append(el("strong", null, `${f.label} `), typesetMath(f.why));
+  const sid = (b.caption_sentences?.length ? b.caption_sentences : byId[b.caption_block]?.sentences || [])[0];
+  if (sid) cap.append(jumpChips([sid]));
+  fig.append(img, cap);
+  return fig;
+}
+
+function resultsTable(t) {
+  const wrap = el("div", "s-table-wrap");
+  const table = el("table", "s-table");
+  if (t.title) table.append(el("caption", null, t.title));
+  const head = el("tr");
+  t.columns.forEach((c, i) => head.append(el("th", i && t.rows.every((r) => /\d/.test(r[i] || "")) ? "num" : null, c)));
+  const thead = el("thead"), tbody = el("tbody");
+  thead.append(head);
+  for (const r of t.rows) {
+    const tr = el("tr");
+    r.forEach((c, i) => {
+      const td = el(i ? "td" : "th", i && t.rows.every((row) => /\d/.test(row[i] || "")) ? "num" : null);
+      td.append(typesetMath(c));
+      tr.append(td);
+    });
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+  wrap.append(table);
+  if (t.note) wrap.append(el("p", "s-table-note", t.note));
+  return wrap;
+}
+
+function resultsChart(c) {
+  const fig = el("figure", "s-chart");
+  if (c.title) fig.append(el("figcaption", "s-chart-title", c.title));
+  const many = c.series.length > 1;
+  if (many) {
+    const legend = el("div", "s-legend");
+    c.series.forEach((sr, i) => {
+      const item = el("span", "s-legend-item");
+      item.append(el("i", `sw s${i + 1}`), sr.name);
+      legend.append(item);
+    });
+    fig.append(legend);
+  }
+  const W = 640, ys = c.series.flatMap((sr) => sr.points.map((p) => p.y));
+  let lo = Math.min(0, ...ys), hi = Math.max(...ys);
+  if (c.kind === "line" && lo === 0 && Math.min(...ys) > 0.3 * hi) lo = Math.min(...ys) * 0.9; // let a narrow range fill the plot
+  const ticks = niceTicks(lo, hi);
+  lo = ticks[0]; hi = ticks[ticks.length - 1];
+  let svg;
+  if (c.kind === "bar") {
+    // Horizontal bars: one row per x label, one bar per series in it.
+    const cats = [...new Set(c.series.flatMap((sr) => sr.points.map((p) => p.x)))];
+    const barH = 18, gap = 2, rowH = c.series.length * (barH + gap) + 12, left = 170, right = 56, top = 8;
+    const H = top + cats.length * rowH + 28;
+    const x = (v) => left + ((v - lo) / (hi - lo)) * (W - left - right);
+    svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": c.title || "Chart" });
+    for (const t of ticks) {
+      svg.append(svgEl("line", { x1: x(t), x2: x(t), y1: top, y2: H - 24, class: t === 0 ? "axis" : "grid" }));
+      svg.append(svgEl("text", { x: x(t), y: H - 8, class: "tick", "text-anchor": "middle" }, fmtNum(t)));
+    }
+    cats.forEach((cat, ci) => {
+      const y0 = top + ci * rowH + 6;
+      const label = svgEl("text", { x: left - 8, y: y0 + (c.series.length * (barH + gap)) / 2 + 4, class: "cat", "text-anchor": "end" },
+        cat.length > 24 ? cat.slice(0, 23) + "…" : cat);
+      label.append(svgEl("title", {}, cat));
+      svg.append(label);
+      c.series.forEach((sr, si) => {
+        const p = sr.points.find((q) => q.x === cat);
+        if (!p) return;
+        const ours = !many && c.ours && cat.toLowerCase() === c.ours.toLowerCase();
+        const by = y0 + si * (barH + gap), x0 = x(Math.max(lo, 0)), x1 = x(p.y);
+        const g = svgEl("g", { class: `bar ${many ? `s${si + 1}` : ours ? "ours" : "other"}` });
+        const w = Math.max(1, Math.abs(x1 - x0)), r = Math.min(4, w / 2);
+        // Rounded at the data end only, square on the baseline.
+        const [a, b] = x1 >= x0 ? [x0, x0 + w] : [x0 - w, x0];
+        const d = x1 >= x0
+          ? `M${a},${by}H${b - r}Q${b},${by} ${b},${by + r}V${by + barH - r}Q${b},${by + barH} ${b - r},${by + barH}H${a}Z`
+          : `M${b},${by}H${a + r}Q${a},${by} ${a},${by + r}V${by + barH - r}Q${a},${by + barH} ${a + r},${by + barH}H${b}Z`;
+        g.append(svgEl("path", { d }), svgEl("title", {}, `${many ? sr.name + " · " : ""}${cat}: ${fmtNum(p.y)}`));
+        g.append(svgEl("text", { x: (x1 >= x0 ? b + 5 : a - 5), y: by + barH / 2 + 4, class: "val", "text-anchor": x1 >= x0 ? "start" : "end" }, fmtNum(p.y)));
+        svg.append(g);
+      });
+    });
+    if (c.x_label || c.y_label) fig.append(svg, el("p", "s-chart-axis", c.y_label || c.x_label));
+    else fig.append(svg);
+  } else {
+    // Lines over ordered x labels (sizes, steps, settings), evenly spaced.
+    const xs = [...new Set(c.series.flatMap((sr) => sr.points.map((p) => p.x)))];
+    const left = 52, right = many && c.series.length <= 4 ? 120 : 24, top = 12, H = 300, bottom = 46;
+    const x = (lab) => left + (xs.length === 1 ? 0.5 : xs.indexOf(lab) / (xs.length - 1)) * (W - left - right);
+    const y = (v) => top + (1 - (v - lo) / (hi - lo)) * (H - top - bottom);
+    svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": c.title || "Chart" });
+    for (const t of ticks) {
+      svg.append(svgEl("line", { x1: left, x2: W - right, y1: y(t), y2: y(t), class: "grid" }));
+      svg.append(svgEl("text", { x: left - 6, y: y(t) + 4, class: "tick", "text-anchor": "end" }, fmtNum(t)));
+    }
+    const every = Math.ceil(xs.length / 8);
+    xs.forEach((lab, i) => {
+      if (i % every) return;
+      svg.append(svgEl("text", { x: x(lab), y: H - bottom + 18, class: "tick", "text-anchor": "middle" }, lab.length > 12 ? lab.slice(0, 11) + "…" : lab));
+    });
+    if (c.x_label) svg.append(svgEl("text", { x: (left + W - right) / 2, y: H - 6, class: "axis-label", "text-anchor": "middle" }, c.x_label));
+    if (c.y_label) svg.append(svgEl("text", { x: 12, y: (top + H - bottom) / 2, class: "axis-label", "text-anchor": "middle",
+      transform: `rotate(-90 12 ${(top + H - bottom) / 2})` }, c.y_label));
+    c.series.forEach((sr, si) => {
+      const pts = sr.points.filter((p) => xs.includes(p.x)).sort((a, b) => xs.indexOf(a.x) - xs.indexOf(b.x));
+      const g = svgEl("g", { class: `line s${si + 1}` });
+      g.append(svgEl("polyline", { points: pts.map((p) => `${x(p.x)},${y(p.y)}`).join(" ") }));
+      for (const p of pts) {
+        const dot = svgEl("g", { class: "pt" });
+        dot.append(svgEl("circle", { cx: x(p.x), cy: y(p.y), r: 10, class: "hit" }), svgEl("circle", { cx: x(p.x), cy: y(p.y), r: 4 }),
+          svgEl("title", {}, `${many ? sr.name + " · " : ""}${p.x}: ${fmtNum(p.y)}`));
+        g.append(dot);
+      }
+      const last = pts[pts.length - 1];
+      if (many && c.series.length <= 4 && last) g.append(svgEl("text", { x: x(last.x) + 8, y: y(last.y) + 4, class: "end-label" }, sr.name.length > 16 ? sr.name.slice(0, 15) + "…" : sr.name));
+      svg.append(g);
+    });
+    fig.append(svg);
+  }
+  return fig;
+}
+
 function renderSummary(s, st, box = $("summary")) {
   box.replaceChildren();
   const running = jobProgress(box, st, "Written from the AI's reading notes and highlights; about a minute.");
@@ -2633,6 +2823,8 @@ function renderSummary(s, st, box = $("summary")) {
   const tl = el("p", "s-tldr");
   tl.append(el("strong", null, "In brief "), typesetMath(s.tldr));
   box.append(tl);
+  const vis = s.visuals || {};
+  if (vis.key_numbers?.length) box.append(keyNumbers(vis.key_numbers));
   const para = (text) => {
     const p = el("p");
     p.append(typesetMath(text));
@@ -2673,8 +2865,20 @@ function renderSummary(s, st, box = $("summary")) {
   if (s.problem) section("Problem", para(s.problem)); // summaries written before version 2
   if (s.novelty?.length) section("What's new", list(s.novelty));
   if (s.approach) section("Approach", para(s.approach));
-  if (s.method?.length) section("Method", list(s.method, "ol"));
-  if (s.results?.length) section("Key results", list(s.results));
+  if (s.method?.length) {
+    const steps = list(s.method, "ol");
+    steps.classList.add("s-steps");
+    section("Method", steps);
+  }
+  const figs = (vis.figures || []).map(keyFigure).filter(Boolean);
+  if (figs.length) section(figs.length > 1 ? "Key figures" : "Key figure", ...figs);
+  if (s.results?.length || vis.table || vis.chart) {
+    const nodes = [];
+    if (vis.chart) nodes.push(resultsChart(vis.chart));
+    if (vis.table) nodes.push(resultsTable(vis.table));
+    if (s.results?.length) nodes.push(list(s.results));
+    section("Key results", ...nodes);
+  }
   if (s.contributions?.length) section("Contributions", list(s.contributions));
   if (s.limitations?.length) section("Limitations", list(s.limitations));
   if (s.related_work?.length) section("Related work", list(s.related_work));
@@ -2691,7 +2895,9 @@ function renderSummary(s, st, box = $("summary")) {
           const ask = el("p", "s-oq-q"), ans = el("p", "s-oq-a");
           ask.append(typesetMath(q.q));
           ans.append(el("span", "s-oq-label", "Proposed answer "), typesetMath(q.answer));
-          li.append(ask, ans);
+          li.append(ask);
+          for (const sid of q.at || []) if (current.sentences[sid]) li.append(raisedAt(sid));
+          li.append(ans);
         }
         ul.append(li);
       }

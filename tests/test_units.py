@@ -335,3 +335,42 @@ def test_formula_range_takes_in_its_own_symbol_beside_it():
     s = "and □r [t] = x"
     a = s.index("r [t]")
     assert _widen_formula(s, a, a + 5, ["□", "[", "t", "]", "r"]) == (s.index("□"), a + 5)
+
+
+# ---- where a question is raised
+
+def _tiny_paper():
+    S = {
+        "s1": "We train transformers of many sizes on web text.",
+        "s2": "Loss falls as a power law in model size.",
+        "s3": "Table 4",
+        "s4": "We conjecture that the scaling laws break down at very large compute budgets.",
+        "s5": "Future work should test whether these laws hold for images and audio.",
+    }
+    return {
+        "id": "x", "sentences": {k: {"text": v} for k, v in S.items()},
+        "blocks": [
+            {"type": "heading", "text": "2 Results", "region": "body"},
+            {"type": "paragraph", "sentences": ["s1", "s2"], "region": "body"},
+            {"type": "caption", "sentences": ["s3"], "region": "body"},
+            {"type": "heading", "text": "6 Discussion", "region": "body"},
+            {"type": "paragraph", "sentences": ["s4", "s5"], "region": "body"},
+        ],
+    }
+
+
+def test_open_question_points_at_the_sentence_raising_it(monkeypatch):
+    from app import ask
+    monkeypatch.setattr(ask, "_semantic", lambda *a: None)  # keywords only: no model
+    p = _tiny_paper()
+    assert ask.raised_at(p, "When do the scaling laws break down?") == "s4"
+    assert ask.raised_at(p, "Do the laws hold for audio models?", context="images and audio") == "s5"
+    assert ask.raised_at(p, "Why Table 4?") != "s3"  # a fragment is never the answer
+
+
+def test_carry_over_keeps_open_question_links():
+    old = _tiny_paper() | {"summary": {"open_questions": [{"q": "Q?", "answer": "A.", "at": ["s4"]}]}, "status": {}}
+    new = _tiny_paper() | {"status": {}}
+    new["sentences"] = {"t" + k[1:]: v for k, v in old["sentences"].items()}
+    carry_over(old, new)
+    assert new["summary"]["open_questions"][0]["at"] == ["t4"]
